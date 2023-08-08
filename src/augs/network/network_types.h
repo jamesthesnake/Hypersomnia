@@ -29,8 +29,7 @@ constexpr std::size_t max_total_file_path_length_v = 250;
 
 constexpr std::size_t max_arenas_in_pool_v = 50;
 
-constexpr std::size_t max_transferred_file_size_v = 10 * 1024 * 1024; // 10 MB
-constexpr std::size_t max_block_size_v = max_transferred_file_size_v;
+constexpr std::size_t max_block_size_v = 2 * 1024 * 1024; // 2 MB
 constexpr std::size_t block_fragment_size_v = 1 * 1024;
 constexpr std::size_t max_packet_size_v = 4 * 1024;
 
@@ -42,6 +41,7 @@ using arena_identifier = augs::constant_size_string<max_arena_name_length_v>;
 using address_string_type = augs::constant_size_string<max_address_string_length_v>;
 
 using client_nickname_type = augs::constant_size_string<max_nickname_length_v>;
+using version_timestamp_string = augs::constant_size_string<max_version_timestamp_length_v>;
 
 inline bool nickname_len_in_range(const std::size_t len) {
 	return len >= min_nickname_length_v && len <= max_nickname_length_v;

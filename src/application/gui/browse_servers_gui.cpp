@@ -1,13 +1,9 @@
-#if BUILD_OPENSSL
-#define CPPHTTPLIB_OPENSSL_SUPPORT
-#endif
-
 #include <future>
 
 #include "application/gui/browse_servers_gui.h"
 #include "augs/network/netcode_utils.h"
 #include "augs/misc/imgui/imgui_control_wrappers.h"
-#include "3rdparty/cpp-httplib/httplib.h"
+#include "3rdparty/include_httplib.h"
 #include "augs/templates/thread_templates.h"
 #include "augs/readwrite/memory_stream.h"
 #include "augs/readwrite/pointer_to_buffer.h"
@@ -21,6 +17,7 @@
 #include "application/network/resolve_address.h"
 #include "application/masterserver/masterserver_requests.h"
 #include "application/masterserver/gameserver_command_readwrite.h"
+#include "augs/misc/httplib_utils.h"
 
 constexpr auto ping_retry_interval = 1;
 constexpr auto reping_interval = 10;
@@ -79,7 +76,9 @@ void browse_servers_gui_state::refresh_server_list(const browse_servers_input in
 	official_server_addresses.clear();
 	error_message.clear();
 	server_list.clear();
+	auto prev_addr = selected_server.address;
 	selected_server = {};
+	selected_server.address = prev_addr;
 
 	data->future_official_addresses = launch_async(
 		[addresses=in.official_arena_servers]() {
@@ -167,7 +166,7 @@ server_list_entry* browse_servers_gui_state::find_entry_by_internal_address(cons
 	return nullptr;
 }
 
-static bool is_internal(const netcode_address_t& address) {
+bool is_internal(const netcode_address_t& address) {
 	if (address.type == NETCODE_ADDRESS_IPV4) {
 		auto ip = address.data.ipv4;
 
@@ -339,7 +338,7 @@ void browse_servers_gui_state::send_pings_and_punch_requests(netcode_socket_t& s
 
 constexpr auto num_columns = 7;
 
-void browse_servers_gui_state::show_server_list(const std::string& label, const std::vector<server_list_entry*>& server_list) {
+void browse_servers_gui_state::show_server_list(const std::string& label, const std::vector<server_list_entry*>& server_list, const faction_view_settings& faction_view) {
 	using namespace augs::imgui;
 
 	const auto& style = ImGui::GetStyle();
@@ -397,6 +396,35 @@ void browse_servers_gui_state::show_server_list(const std::string& label, const 
 			}
 		}
 
+		if (ImGui::IsItemHovered()) {
+			auto tool = scoped_tooltip();
+
+			if (s.heartbeat.num_online == 0) {
+				text_disabled("No players online.");
+			}
+			else {
+				text_color(typesafe_sprintf("%x players online:", s.heartbeat.num_online), green);
+
+				auto do_faction_summary = [&](auto faction, auto& entries) {
+					if (entries.empty()) {
+						return;
+					}
+
+					ImGui::Separator();
+
+					const auto labcol = faction_view.colors[faction].current_player_text;
+
+					for (auto& e : entries) {
+						text_color(e.nickname, labcol);
+					}
+				};
+
+				do_faction_summary(faction_type::RESISTANCE, s.heartbeat.players_resistance);
+				do_faction_summary(faction_type::METROPOLIS, s.heartbeat.players_metropolis);
+				do_faction_summary(faction_type::SPECTATOR, s.heartbeat.players_spectating);
+			}
+		}
+		
 		if (ImGui::IsItemClicked()) {
 			if (ImGui::IsMouseDoubleClicked(0)) {
 				LOG("Double-clicked server list entry: %x (%x). Connecting.", ToString(s.address), d.server_name);
@@ -440,14 +468,12 @@ void browse_servers_gui_state::show_server_list(const std::string& label, const 
 
 		ImGui::NextColumn();
 
-		const auto secs_ago = augs::date_time::secs_since_epoch() - s.appeared_when;
+		const auto secs_ago = augs::date_time::secs_since_epoch() - s.time_hosted;
 		text_disabled(augs::date_time::format_how_long_ago(true, secs_ago));
 
 		ImGui::NextColumn();
 	}
 }
-
-bool successful(const int http_status_code);
 
 const resolve_address_result* browse_servers_gui_state::find_resolved_official(const netcode_address_t& n) {
 	for (const auto& o : official_server_addresses) {
@@ -466,6 +492,8 @@ const resolve_address_result* browse_servers_gui_state::find_resolved_official(c
 }
 
 bool browse_servers_gui_state::perform(const browse_servers_input in) {
+	using namespace httplib_utils;
+
 	if (!show) {
 		return false;
 	}
@@ -502,14 +530,14 @@ bool browse_servers_gui_state::perform(const browse_servers_input in) {
 
 		LOG("Server list response bytes: %x", bytes.size());
 
-		auto stream = augs::make_read_stream(bytes.data(), bytes.size());
+		auto stream = augs::make_ptr_read_stream(bytes.data(), bytes.size());
 
 		try {
 			while (stream.has_unread_bytes()) {
 				server_list_entry entry;
 
 				augs::read_bytes(stream, entry.address);
-				augs::read_bytes(stream, entry.appeared_when);
+				augs::read_bytes(stream, entry.time_hosted);
 				augs::read_bytes(stream, entry.heartbeat);
 
 				server_list.emplace_back(std::move(entry));
@@ -621,7 +649,7 @@ bool browse_servers_gui_state::perform(const browse_servers_input in) {
 		};
 
 		auto by_appeared = [](const T& a, const T& b) {
-			return a->appeared_when > b->appeared_when;
+			return a->time_hosted > b->time_hosted;
 		};
 
 		auto make_comparator = [&](auto op1, auto op2, auto op3) {
@@ -775,7 +803,7 @@ bool browse_servers_gui_state::perform(const browse_servers_input in) {
 
 		if (has_local_servers) {
 			do_column_labels(local_servers_label, green);
-			show_server_list("local", local_server_list);
+			show_server_list("local", local_server_list, in.faction_view);
 		}
 
 		if (!has_local_servers) {
@@ -786,7 +814,7 @@ bool browse_servers_gui_state::perform(const browse_servers_input in) {
 		}
 
 		if (has_official_servers) {
-			show_server_list("official", official_server_list);
+			show_server_list("official", official_server_list, in.faction_view);
 		}
 		else {
 			ImGui::NextColumn();
@@ -797,7 +825,7 @@ bool browse_servers_gui_state::perform(const browse_servers_input in) {
 		separate_with_label_only(community_servers_label, orange);
 
 		if (has_community_servers) {
-			show_server_list("community", community_server_list);
+			show_server_list("community", community_server_list, in.faction_view);
 		}
 		else {
 			ImGui::NextColumn();
@@ -863,7 +891,18 @@ bool browse_servers_gui_state::perform(const browse_servers_input in) {
 			auto scope = maybe_disabled_cols({}, !selected_server.is_set());
 
 			if (ImGui::Button("Connect")) {
-				requested_connection = selected_server.address;
+				auto& s = selected_server;
+
+				LOG("Double-clicked server list entry: %x (%x). Connecting.", ToString(s.address), s.heartbeat.server_name);
+
+				displayed_connecting_server_name = s.heartbeat.server_name;
+
+				if (s.progress.found_on_internal_network) {
+					requested_connection = s.heartbeat.internal_network_address;
+				}
+				else {
+					requested_connection = s.address;
+				}
 			}
 
 			ImGui::SameLine();
@@ -892,7 +931,19 @@ bool browse_servers_gui_state::perform(const browse_servers_input in) {
 		}
 	}
 	
-	server_details.perform(selected_server);
+	if (server_details.show) {
+		if (!selected_server.is_set()) {
+			for (auto& s : server_list) {
+				if (s.address == selected_server.address) {
+					selected_server = s;
+				}
+			}
+		}
+	}
+
+	if (server_details.perform(selected_server, in.faction_view)) {
+		refresh_server_list(in);
+	}
 
 	if (requested_connection.has_value()) {
 		in.client_start.set_custom(::ToString(*requested_connection));
@@ -919,19 +970,151 @@ const server_list_entry* browse_servers_gui_state::find_entry(const client_start
 	return nullptr;
 }
 
-void server_details_gui_state::perform(const server_list_entry& entry) {
+void server_details_gui_state::perform_online_players(const server_list_entry& entry, const faction_view_settings& faction_view) {
 	using namespace augs::imgui;
 
+	auto heartbeat = entry.heartbeat;
+
+	//input_text("Server version", heartbeat.server_version, ImGuiInputTextFlags_ReadOnly);
+	if (heartbeat.num_online == 0) {
+		text_disabled("No players online.");
+		return;
+	}
+
+#if 0
+	ImGui::Separator();
+	text("Faction scores");
+	ImGui::Separator();
+
+	auto do_faction_score = [&](const auto faction, const auto score) {
+		const auto labcol = faction_view.colors[faction].current_player_text;
+
+		text_color(typesafe_sprintf("%x: %x", format_enum(faction), score), labcol);
+	};
+
+	do_faction_score(faction_type::RESISTANCE, heartbeat.score_resistance);
+	do_faction_score(faction_type::METROPOLIS, heartbeat.score_metropolis);
+#endif
+
+	ImGui::Separator();
+
+	auto longest_nname = std::size_t(0);
+
+	for (auto& e : heartbeat.players_resistance) { 
+		longest_nname = std::max(longest_nname, e.nickname.length());
+	}
+	for (auto& e : heartbeat.players_metropolis) { 
+		longest_nname = std::max(longest_nname, e.nickname.length());
+	}
+	for (auto& e : heartbeat.players_spectating) { 
+		longest_nname = std::max(longest_nname, e.nickname.length());
+	}
+
+	text_color(typesafe_sprintf("Players online: %x", heartbeat.num_online), green);
+
+	ImGui::Columns(3);
+	//ImGui::SetColumnWidth(0, ImGui::CalcTextSize("9999999").x);
+	ImGui::SetColumnWidth(0, ImGui::CalcTextSize("9").x * (longest_nname + 5));
+	ImGui::SetColumnWidth(1, ImGui::CalcTextSize("Score99").x);
+	ImGui::SetColumnWidth(2, ImGui::CalcTextSize("Deaths90").x);
+
+#if 0
+	text_disabled("Nickname");
+	ImGui::NextColumn();
+
+	//text_disabled("Score");
+	ImGui::NextColumn();
+
+	//text_disabled("Deaths");
+	ImGui::NextColumn();
+#endif
+
+	bool once = true;
+
+	auto do_faction = [&](const auto faction, const auto& entries, const auto score) {
+		(void)score;
+		if (entries.empty()) {
+			return;
+		}
+
+		const auto labcol = faction_view.colors[faction].current_player_text;
+		const auto col = faction_view.colors[faction].current_player_text;
+		(void)labcol;
+
+		ImGui::Separator();
+
+		if (faction == faction_type::SPECTATOR) {
+			text_disabled("Spectators");
+
+			ImGui::NextColumn();
+			ImGui::NextColumn();
+			ImGui::NextColumn();
+
+			ImGui::Separator();
+		}
+		else {
+			text_disabled(typesafe_sprintf("%x", format_enum(faction)));
+
+			ImGui::NextColumn();
+			if (once) {
+				text_disabled("Score");
+			}
+			//text_disabled(typesafe_sprintf("%x", score));
+
+			ImGui::NextColumn();
+			if (once) {
+				text_disabled("Deaths");
+			}
+			ImGui::NextColumn();
+
+			ImGui::Separator();
+
+			once = false;
+		}
+
+
+		for (auto& e : entries) {
+			text_color(e.nickname, col);
+			ImGui::NextColumn();
+
+			if (faction != faction_type::SPECTATOR) {
+				text(std::to_string(e.score));
+			}
+
+			ImGui::NextColumn();
+
+			if (faction != faction_type::SPECTATOR) {
+				text(std::to_string(e.deaths));
+			}
+
+			ImGui::NextColumn();
+		}
+	};
+
+	do_faction(faction_type::RESISTANCE, heartbeat.players_resistance, heartbeat.score_resistance);
+	do_faction(faction_type::METROPOLIS, heartbeat.players_metropolis, heartbeat.score_metropolis);
+	do_faction(faction_type::SPECTATOR, heartbeat.players_spectating, 0);
+}
+
+bool server_details_gui_state::perform(const server_list_entry& entry, const faction_view_settings& faction_view) {
+	using namespace augs::imgui;
+	//ImGui::SetNextWindowSize(ImVec2(350,560), ImGuiCond_FirstUseEver);
 	auto window = make_scoped_window(ImGuiWindowFlags_AlwaysAutoResize);
 
 	if (!window) {
-		return;
+		return false;
 	}
 
 	if (!entry.is_set()) {
 		text_disabled("No server selected.");
-		return;
+		return false;
 	}
+
+	if (ImGui::Button("Refresh")) {
+		return true;
+	}
+
+	ImGui::Separator();
 
 	auto heartbeat = entry.heartbeat;
 	const auto& internal_addr = heartbeat.internal_network_address;
@@ -970,7 +1153,8 @@ void server_details_gui_state::perform(const server_list_entry& entry) {
 		input_text("Port delta", delta, ImGuiInputTextFlags_ReadOnly);
 	}
 
-	input_text("Server version", heartbeat.server_version, ImGuiInputTextFlags_ReadOnly);
+	perform_online_players(entry, faction_view);
+	return false;
 }
 
 void browse_servers_gui_state::reping_all_servers() {

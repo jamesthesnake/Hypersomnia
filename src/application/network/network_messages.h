@@ -59,7 +59,7 @@ constexpr std::size_t total_header_bytes_v = (
 constexpr std::size_t max_message_size_v = ((chosen_packet_size_v - total_header_bytes_v) / 4) * 4;
 
 struct server_vars;
-struct server_solvable_vars;
+struct server_public_vars;
 
 template <class B>
 struct basic_preserialized_message : public yojimbo::Message {
@@ -181,12 +181,27 @@ namespace net_messages {
 		static constexpr bool client_to_server = true;
 	};
 
-	struct new_server_solvable_vars : preserialized_message_type_for_t<server_solvable_vars> {
+	struct new_server_runtime_info : only_block_message {
 		static constexpr bool server_to_client = true;
 		static constexpr bool client_to_server = false;
 
-		bool write_payload(const server_solvable_vars&);
-		bool read_payload(server_solvable_vars&);
+		bool read_payload(
+			server_runtime_info&
+		);
+
+		template <class F>
+		bool write_payload(
+			F block_allocator,
+			const server_runtime_info&
+		);
+	};
+
+	struct new_server_public_vars : preserialized_message_type_for_t<server_public_vars> {
+		static constexpr bool server_to_client = true;
+		static constexpr bool client_to_server = false;
+
+		bool write_payload(const server_public_vars&);
+		bool read_payload(server_public_vars&);
 	};
 
 	struct new_server_vars : preserialized_message_type_for_t<server_vars> {
@@ -261,19 +276,19 @@ namespace net_messages {
 		static constexpr bool client_to_server = true;
 	};
 
-	struct file_download : only_block_message {
+	struct file_download_link : net_message_with_payload<::file_download_link_payload> {
 		static constexpr bool server_to_client = true;
 		static constexpr bool client_to_server = false;
+	};
 
-		bool read_payload(
-			file_download_payload&
-		);
+	struct file_download : net_message_with_payload<::file_download_payload> {
+		static constexpr bool server_to_client = true;
+		static constexpr bool client_to_server = false;
+	};
 
-		template <class F>
-		bool write_payload(
-			F block_allocator,
-			const file_download_payload&
-		);
+	struct file_chunks_request : net_message_with_payload<::file_chunks_request_payload> {
+		static constexpr bool server_to_client = false;
+		static constexpr bool client_to_server = true;
 	};
 
 	struct download_progress_message : net_message_with_payload<::download_progress_message> {
@@ -285,7 +300,8 @@ namespace net_messages {
 		client_welcome*,
 		public_settings_update*, 
 		new_server_vars*,
-		new_server_solvable_vars*,
+		new_server_public_vars*,
+		new_server_runtime_info*,
 		full_arena_snapshot*,
 		//initial_steps_correction*,
 #if CONTEXTS_SEPARATE
@@ -302,7 +318,9 @@ namespace net_messages {
 		player_avatar_exchange*,
 		request_arena_file_download*,
 		file_download*,
-		download_progress_message*
+		file_download_link*,
+		download_progress_message*,
+		file_chunks_request*
 	>;
 	
 	using id_t = type_in_list_id<all_t>;

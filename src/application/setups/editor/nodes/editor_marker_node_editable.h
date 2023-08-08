@@ -41,14 +41,17 @@ struct editor_portal_info {
 	bool auto_scale_pitches = true;
 	bool trampoline_like = false;
 	bool ignore_airborne_characters = false;
+	bool ignore_walking_characters = false;
 
 	float enter_time_ms = 500.0f;
 	float travel_time_ms = 500.0f;
 	float exit_cooldown_ms = 200.0f;
 
 	augs::maybe<force_field_def> force_field = augs::maybe<force_field_def>(force_field_def(), false);
+	augs::maybe<hazard_def> hazard = augs::maybe<hazard_def>(hazard_def(), false);
 
 	editor_filter_flags reacts_to;
+	per_actual_faction<bool> reacts_to_factions = { true, true, true };
 
 	float begin_entering_highlight_ms = 1000.0f;
 	rgba_channel decrease_opacity_to = 0;
@@ -78,6 +81,8 @@ struct editor_portal_info {
 	portal_exit_impulses exit_impulses;
 	portal_exit_direction exit_direction = portal_exit_direction::PORTAL_DIRECTION;
 	portal_exit_position exit_position = portal_exit_position::PORTAL_CENTER_PLUS_ENTERING_OFFSET;
+
+	augs::maybe<std::string> context_tip;
 	// END GEN INTROSPECTOR
 
 	bool operator==(const editor_portal_info&) const = default;

@@ -45,16 +45,19 @@ game_connection_config::game_connection_config() {
 	timeout = 10;
 
 	{
-		auto& solvable_stream = channel[static_cast<int>(game_channel_type::SERVER_SOLVABLE_AND_STEPS)];
+		auto& solvable_stream = channel[static_cast<int>(game_channel_type::RELIABLE_MESSAGES)];
 		solvable_stream.type = yojimbo::CHANNEL_TYPE_RELIABLE_ORDERED;
 		solvable_stream.maxBlockSize = max_block_size_v;
-		solvable_stream.sentPacketBufferSize = 1024 * 2;
+		solvable_stream.sentPacketBufferSize = 1024 * 4;
 		solvable_stream.maxMessagesPerPacket = 32;
 		solvable_stream.messageResendTime = 0.f;
 		solvable_stream.messageSendQueueSize = 1024 * 8;
 		solvable_stream.messageReceiveQueueSize = 1024 * 8;
 		solvable_stream.blockFragmentSize = block_fragment_size_v;
 		solvable_stream.blockFragmentResendTime = 0.15f;
+
+		ackedPacketsBufferSize = 1024 * 4;
+		receivedPacketsBufferSize = 1024 * 4;
 	}
 
 	{
@@ -62,7 +65,7 @@ game_connection_config::game_connection_config() {
 		stats.type = yojimbo::CHANNEL_TYPE_UNRELIABLE_UNORDERED;
 	}
 
-	serverPerClientMemory = 20 * 1024 * 1024;
+	serverPerClientMemory = 14 * 1024 * 1024;
 	clientMemory = 1024 * 1024 * 50;
 
 	networkSimulator = true;
@@ -194,7 +197,15 @@ void server_adapter::receive_packets_from(const client_id_type& id) {
 	server.ReceivePacketsFrom(id);
 }
 
-client_adapter::client_adapter(const std::optional<port_type> preferred_binding_port) :
+bool client_auxiliary_command_function(void* context, uint8_t* packet, int bytes) {
+	auto* adapter = reinterpret_cast<client_adapter*>(context);
+	return adapter->auxiliary_command_callback(reinterpret_cast<std::byte*>(packet), bytes);
+}
+
+client_adapter::client_adapter(
+	const std::optional<port_type> preferred_binding_port,
+	client_auxiliary_command_callback_type auxiliary_command_callback
+) :
 	connection_config(),
 	adapter(nullptr),
 	client(
@@ -203,8 +214,10 @@ client_adapter::client_adapter(const std::optional<port_type> preferred_binding_
 		connection_config, 
 		adapter, 
 		yojimbo_time()
-	)
-{}
+	),
+	auxiliary_command_callback(auxiliary_command_callback)
+{
+}
 
 std::optional<unsigned long> get_trailing_number(const std::string& s);
 std::string cut_trailing_number(const std::string& s);
@@ -505,6 +518,11 @@ resolve_address_result client_adapter::connect(const address_and_port& in) {
 		2
 	);
 
+	if (auto detail = client.GetClientDetail()) {
+		detail->config.auxiliary_command_function = client_auxiliary_command_function;
+		detail->config.auxiliary_command_context = this;
+	}
+
 	return resolved_addr;
 }
 
@@ -514,10 +532,6 @@ void client_adapter::disconnect() {
 
 void client_adapter::send_packets() {
 	client.SendPackets();
-}
-
-void client_adapter::receive_packets() {
-	client.ReceivePackets();
 }
 
 bool client_adapter::can_send_message(const game_channel_type& channel) const {

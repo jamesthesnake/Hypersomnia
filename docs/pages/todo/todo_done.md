@@ -4556,7 +4556,7 @@ Advantages:
 - Bump version to 1.1.X after introducing signed builds
 	- test_pack_upload.ps1
 	- hypersomnia_version.cpp.in
-	- archive_and_upload.sh
+	- generate_archives.sh
 
 - Devops
 	- Maybe add somewhere that commit hash?
@@ -6371,3 +6371,43 @@ This will discard your redo history."
     - Let's just create all by default
     - e.g. cs2d has lots of map-centric scripting and they all just launch something by default I guess too
     
+- a nicer shooting range read from json
+    - first impression is important
+
+- fix that .part
+
+- linux -g notice
+- server_public_vars
+
+- merge solvable vars with server vars
+    - solvable vars should only exist at runtime and actually be called arena switched command
+
+- show spectator after finishing downloads
+    - people get confused when they don't see the window
+- remove lewsii and amplifier arm from the gungame progression
+    - sad but necessary, amplifier arm breaks flow kinda and people dont get how to use lewsii
+
+- current_arena -> arena/map
+
+- relaunch the server with the exact same CLI
+    - always the whole game actually
+    - but remember to not pass duplicate flags
+
+- dont require enter to confirm some textboxes like in about
+- esc in project selector goes straight to main menu and editor has just quit to projects
+- banlist for notifications
+
+- remove official maps from the in-game catalogue
+- also fix that autosave.json scheme
+
+- remove official maps from the in-game catalogue
+- also fix that autosave.json scheme
+- Per-mode layer activation/deactivation
+
+- Host on double click with this chosen map
+
+- A flag to sync all maps on server startup
+    - So that the server can be set-up in one-go with a non-existing map
+
+- (separate area with a sniper rifle) When you hit close to a center, you score a headshot.
+    - self-healing character

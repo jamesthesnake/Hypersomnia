@@ -33,6 +33,8 @@
 #include "application/setups/server/server_nat_traversal.h"
 
 #include "application/setups/server/rcon_level.h"
+#include "game/messages/mode_notification.h"
+#include "application/setups/server/file_chunk_packet.h"
 
 struct netcode_socket_t;
 struct config_lua_table;
@@ -55,7 +57,16 @@ class server_adapter;
 struct resolve_address_result;
 struct editor_project;
 
-using arena_files_database_type = std::unordered_map<augs::secure_hash_type, augs::path_type>;
+struct arena_files_database_entry {
+	augs::path_type path;
+	std::vector<std::byte> cached_file;
+
+	void free_opened_file() {
+		std::vector<std::byte>().swap(cached_file);
+	}
+};
+
+using arena_files_database_type = std::unordered_map<augs::secure_hash_type, arena_files_database_entry>;
 
 class server_setup : 
 	public default_setup_settings,
@@ -73,10 +84,18 @@ class server_setup :
 	all_modes_variant current_mode_state;
 
 	client_vars integrated_client_vars;
+
 	server_vars vars;
-	server_solvable_vars solvable_vars;
+	server_private_vars private_vars;
+
+	server_public_vars last_broadcast_public_vars;
+
+	server_runtime_info runtime_info;
+
 	augs::path_type current_arena_folder;
-	private_server_vars private_vars;
+	augs::secure_hash_type current_arena_hash;
+
+	server_public_vars make_public_vars() const;
 
 	/* The rest is server-specific */
 	sol::state& lua;
@@ -88,8 +107,11 @@ class server_setup :
 	augs::server_listen_input last_start;
 	std::optional<augs::dedicated_server_input> dedicated;
 
+	std::unordered_set<augs::secure_hash_type> cached_currently_downloaded_files;
+	std::unordered_set<augs::secure_hash_type> opened_arena_files;
+
 	auto quit_playtesting_or(custom_imgui_result result) const {
-		if (solvable_vars.playtesting_context && result == custom_imgui_result::GO_TO_MAIN_MENU) {
+		if (vars.playtesting_context && result == custom_imgui_result::GO_TO_MAIN_MENU) {
 			return custom_imgui_result::QUIT_PLAYTESTING;
 		}
 
@@ -97,7 +119,7 @@ class server_setup :
 	}
 
 	auto quit_playtesting_or(setup_escape_result result) const {
-		if (solvable_vars.playtesting_context && result == setup_escape_result::GO_TO_MAIN_MENU) {
+		if (vars.playtesting_context && result == setup_escape_result::GO_TO_MAIN_MENU) {
 			return setup_escape_result::QUIT_PLAYTESTING;
 		}
 
@@ -138,7 +160,7 @@ class server_setup :
 	bool request_restart_after_shutdown = false;
 
 	bool rebuild_player_meta_viewables = false;
-	arena_player_metas last_player_metas;
+	arena_player_metas integrated_player_metas;
 
 	client_gui_state integrated_client_gui;
 	std::string failure_reason;
@@ -195,7 +217,7 @@ private:
 	void send_full_arena_snapshot_to(const client_id_type);
 	void send_complete_solvable_state_to(const client_id_type);
 
-	void send_packets_to_clients_downloading_files();
+	void refresh_available_direct_download_bandwidths();
 	void send_packets_if_its_time();
 
 	void send_heartbeat_to_server_list();
@@ -223,6 +245,7 @@ private:
 
 	template <class P>
 	message_handler_result handle_rcon_payload(
+		rcon_level_type,
 		const P& payload
 	);
 
@@ -253,9 +276,8 @@ public:
 		const packaged_official_content& official,
 		const augs::server_listen_input&,
 		const server_vars&,
-		const server_solvable_vars&,
+		const server_private_vars&,
 		const client_vars& integrated_client_vars,
-		const private_server_vars&,
 		std::optional<augs::dedicated_server_input>,
 
 		const server_nat_traversal_input& nat_traversal_input,
@@ -293,11 +315,10 @@ public:
 	void customize_for_viewing(config_lua_table&) const;
 
 	void apply(const config_lua_table&);
-	void apply(const server_vars&, bool force);
-	void apply(const server_solvable_vars&, bool force);
-	void apply(const private_server_vars&, bool force);
+	void apply(const server_vars&, bool first_time = false);
+	void apply(const server_private_vars&);
 
-	void choose_arena(const std::string& name);
+	void rechoose_arena();
 
 	std::string describe_client(const client_id_type id) const;
 	void log_malicious_client(const client_id_type id);
@@ -403,6 +424,14 @@ public:
 
 				if (is_dedicated()) {
 					auto post_solve = [&](auto old_callback, const const_logic_step step) {
+						{
+							auto& notifications = step.get_queue<messages::mode_notification>();
+
+							if (!notifications.empty()) {
+								request_immediate_heartbeat();
+							}
+						}
+
 						default_server_post_solve(step);
 						old_callback(step);
 					};
@@ -421,12 +450,16 @@ public:
 				}
 				else {
 					auto post_solve = [&](auto old_callback, const const_logic_step step) {
-						auto& notifications = step.get_queue<messages::game_notification>();
+						auto& notifications = step.get_queue<messages::mode_notification>();
+
+						if (!notifications.empty()) {
+							request_immediate_heartbeat();
+						}
 
 						const auto current_time = get_current_time();
 
 						erase_if(notifications, [this, current_time](const auto& msg) {
-							return integrated_client_gui.chat.add_entry_from_game_notification(current_time, msg, get_local_player_id());
+							return integrated_client_gui.chat.add_entry_from_mode_notification(current_time, msg, get_local_player_id());
 						});
 
 						default_server_post_solve(step);
@@ -458,7 +491,8 @@ public:
 			step_collected.clear();
 		}
 
-		send_packets_to_clients_downloading_files();
+		refresh_available_direct_download_bandwidths();
+		clean_unused_cached_files();
 
 		log_performance();
 	}
@@ -594,8 +628,6 @@ public:
 
 	void default_server_post_solve(const const_logic_step step);
 
-	void register_external_resources_of(const editor_project&);
-
 	void log_match_end_json(const messages::match_summary_message&);
 	void log_match_start_json(const messages::team_match_start_message&);
 
@@ -603,4 +635,13 @@ public:
 	void send_goodbye_to_masterserver();
 
 	void broadcast_shutdown_message();
+
+	void refresh_runtime_info_for_rcon();
+
+	void set_client_is_downloading_files(client_id_type, server_client_state& c, downloading_type);
+
+	file_chunk_index_type calc_num_chunks_per_tick_per_downloader() const;
+
+	bool send_file_chunk(client_id_type id, const arena_files_database_entry& entry, file_chunk_index_type i);
+	void clean_unused_cached_files();
 };

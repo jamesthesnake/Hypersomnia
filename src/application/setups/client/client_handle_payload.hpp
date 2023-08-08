@@ -21,8 +21,8 @@ message_handler_result client_setup::handle_payload(
 		}
 	}
 
-	if constexpr (std::is_same_v<T, server_solvable_vars>) {
-		if (downloading.has_value()) {
+	if constexpr (std::is_same_v<T, server_public_vars>) {
+		if (pause_solvable_stream) {
 			/* 
 				Ignore.
 				We will resync everything once we're done anyway.
@@ -35,12 +35,14 @@ message_handler_result client_setup::handle_payload(
 		const auto& new_vars = payload;
 
 		if (are_initial_vars) {
-			LOG("Received initial vars from the server");
+			LOG("Received initial public vars from the server");
 			state = client_state_type::RECEIVING_INITIAL_SNAPSHOT;
 		}
 		else {
-			LOG("Received corrected vars from the server");
+			LOG("Received corrected public vars from the server");
 		}
+
+		LOG("external_arena_files_provider: %x", new_vars.external_arena_files_provider);
 
 		const auto& new_arena = new_vars.arena;
 		const auto& new_mode = new_vars.game_mode;
@@ -48,13 +50,12 @@ message_handler_result client_setup::handle_payload(
 		LOG_NVPS(new_arena);
 
 		const bool reload_arena = 
-			new_arena != sv_solvable_vars.arena
-			|| new_mode != sv_solvable_vars.game_mode
-			|| new_vars.required_arena_hash != sv_solvable_vars.required_arena_hash
+			new_arena != sv_public_vars.arena
+			|| new_mode != sv_public_vars.game_mode
+			|| new_vars.required_arena_hash != sv_public_vars.required_arena_hash
 		;
 
-		sv_solvable_vars = new_vars;
-		client_gui.rcon.on_arrived(new_vars);
+		sv_public_vars = new_vars;
 
 		if (are_initial_vars || reload_arena) {
 			if (!try_load_arena_according_to(new_vars, true)) {
@@ -67,13 +68,45 @@ message_handler_result client_setup::handle_payload(
 			return continue_v;
 		}
 
-		return advance_downloading_session(payload.file_bytes);
+		if (direct_downloader.has_value()) {
+			set_disconnect_reason("The server sent a file payload despite an ongoing download.");
+			return abort_v;
+		}
+
+		if (!last_requested_direct_file_hash.has_value()) {
+			set_disconnect_reason("The server sent a file payload despite no download request.");
+			return abort_v;
+		}
+
+		direct_downloader = direct_file_download(*last_requested_direct_file_hash, payload.num_file_bytes);
+
+		for (const auto& buffered_chunk : buffered_chunk_packets) {
+			if (direct_downloader.has_value()) {
+				handle_received(buffered_chunk);
+			}
+			else {
+				break;
+			}
+		}
+
+		buffered_chunk_packets.clear();
+
+		return continue_v;
+	}
+	else if constexpr (std::is_same_v<T, file_download_link_payload>) {
+		if (is_replaying()) {
+			return continue_v;
+		}
+
+		/* Unimplemented */
+
+		return abort_v;
 	}
 	else if constexpr (std::is_same_v<T, server_vars>) {
-		const auto& new_vars = payload;
-
-		sv_vars = new_vars;
-		client_gui.rcon.on_arrived(new_vars);
+		client_gui.rcon.on_arrived(payload);
+	}
+	else if constexpr (std::is_same_v<T, server_runtime_info>) {
+		client_gui.rcon.on_arrived(payload);
 	}
 	else if constexpr (std::is_same_v<T, server_broadcasted_chat>) {
 		const auto author_id = payload.author;
@@ -81,11 +114,16 @@ message_handler_result client_setup::handle_payload(
 		std::string sender_player_nickname;
 		auto sender_player_faction = faction_type::SPECTATOR;
 
+		if (payload.recipient_effect == recipient_effect_type::RESUME_RECEIVING_SOLVABLES) {
+			/* Has to set it as we have potentially no mode properly setup yet. */
+			sender_player_nickname = vars.nickname;
+		}
+
 		get_arena_handle(client_arena_type::REFERENTIAL).on_mode(
 			[&](const auto& typed_mode) {
 				if (auto entry = typed_mode.find(author_id)) {
 					sender_player_faction = entry->get_faction();
-					sender_player_nickname = entry->get_chosen_name();
+					sender_player_nickname = entry->get_nickname();
 				}
 			}
 		);
@@ -111,7 +149,7 @@ message_handler_result client_setup::handle_payload(
 			client_gui.chat.add_entry(std::move(new_entry));
 		}
 
-		if (payload.recipient_shall_kindly_leave) {
+		if (payload.recipient_effect == recipient_effect_type::DISCONNECT) {
 			if (payload.target == chat_target_type::SERVER_SHUTTING_DOWN) {
 				const auto msg = std::string(payload.message);
 
@@ -146,15 +184,26 @@ message_handler_result client_setup::handle_payload(
 			LOG_NVPS(last_disconnect_reason);
 
 			return abort_v;
-		}	
+		}
+		else if (payload.recipient_effect == recipient_effect_type::RESUME_RECEIVING_SOLVABLES) {
+			pause_solvable_stream = false;
+
+			/*
+				Stop sending entropies until the next full arena snapshot,
+				as if we just have entered the game.
+			*/
+
+			state = client_state_type::RECEIVING_INITIAL_SNAPSHOT;
+		}
 	}
 	else if constexpr (std::is_same_v<T, initial_snapshot_payload>) {
-		if (downloading.has_value()) {
+		if (pause_solvable_stream) {
 			/* 
 				Ignore.
 				We will resync everything once we're done anyway.
 			*/
 
+			LOG("Ignoring initial_snapshot_payload during download.");
 			return continue_v;
 		}
 
@@ -165,8 +214,7 @@ message_handler_result client_setup::handle_payload(
 		*/
 
 		if (!now_resyncing && state < client_state_type::RECEIVING_INITIAL_SNAPSHOT) {
-			LOG("The server has sent initial state early (state: %x). Disconnecting.", state);
-			log_malicious_server();
+			set_disconnect_reason(typesafe_sprintf("The server has sent initial state early (state: %x). Disconnecting.", state));
 			return abort_v;
 		}
 
@@ -228,9 +276,7 @@ message_handler_result client_setup::handle_payload(
 #if CONTEXTS_SEPARATE
 	else if constexpr (std::is_same_v<T, prestep_client_context>) {
 		if (state != client_state_type::IN_GAME) {
-			LOG("The server has sent prestep context too early (state: %x). Disconnecting.", state);
-
-			log_malicious_server();
+			set_disconnect_reason(typesafe_sprintf("The server has sent prestep context too early (state: %x). Disconnecting.", state));
 			return abort_v;
 		}
 
@@ -238,19 +284,18 @@ message_handler_result client_setup::handle_payload(
 	}
 #endif
 	else if constexpr (std::is_same_v<T, networked_server_step_entropy>) {
-		if (downloading.has_value()) {
+		if (pause_solvable_stream) {
 			/* 
 				Ignore.
 				We will resync everything once we're done anyway.
 			*/
 
+			LOG("Ignoring networked_server_step_entropy during download.");
 			return continue_v;
 		}
 
 		if (state != client_state_type::IN_GAME) {
-			LOG("The server has sent entropy too early (state: %x). Disconnecting.", state);
-
-			log_malicious_server();
+			set_disconnect_reason(typesafe_sprintf("The server has sent entropy too early (state: %x). Disconnecting.", state));
 			return abort_v;
 		}
 
@@ -281,7 +326,7 @@ message_handler_result client_setup::handle_payload(
 		//LOG_NVPS(payload.num_entropies_accepted);
 	}
 	else if constexpr (std::is_same_v<T, public_settings_update>) {
-		if (downloading.has_value()) {
+		if (pause_solvable_stream) {
 			/* 
 				Ignore.
 				We will resync everything once we're done anyway.
@@ -302,16 +347,20 @@ message_handler_result client_setup::handle_payload(
 		player_metas[payload.subject_id.value].public_settings = payload.new_settings;
 	}
 	else if constexpr (std::is_same_v<T, net_statistics_update>) {
-		const auto& ping_values = payload.ping_values;
+		const auto& mode_player_stats = payload.stats;
 
-		int ping_value_i = 0;
+		std::size_t player_i = 0;
 
 		get_arena_handle(client_arena_type::REFERENTIAL).on_mode(
 			[&](const auto& typed_mode) {
 				typed_mode.for_each_player_id(
 					[&](const mode_player_id& id) {
-						if (ping_value_i < static_cast<int>(ping_values.size())) {
-							player_metas[id.value].stats.ping = ping_values[ping_value_i++];
+						if (player_i < mode_player_stats.size()) {
+							auto& in_stats = mode_player_stats[player_i++];
+							auto& out_stats = player_metas[id.value].stats;
+
+							out_stats.ping = in_stats.ping;
+							out_stats.download_progress = in_stats.download_progress;
 
 							return callback_result::CONTINUE;
 						}

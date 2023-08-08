@@ -2175,7 +2175,7 @@ namespace test_flavours {
 
 			{
 				components::item item;
-				item.charges = 8;
+				item.charges = 10;
 				meta.set(item);
 			}
 
@@ -3022,9 +3022,9 @@ namespace test_flavours {
 			gun_def.head_radius_multiplier = 0.4f;
 			gun_def.num_last_bullets_to_trigger_low_ammo_cue = 10;
 			gun_def.low_ammo_cue_sound.id = to_sound_id(test_scene_sound_id::LOW_AMMO_CUE);
-			gun_def.kickback_towards_wielder = kickback_mult * 15.f;
+			gun_def.kickback_towards_wielder = kickback_mult * 1.f;
 			gun_def.adversarial.knockout_award = static_cast<money_type>(250);
-			gun_def.recoil_multiplier = 0.25f;
+			gun_def.recoil_multiplier = 0.1f;
 
 			gun_def.maximum_heat = 2.f;
 			gun_def.gunshot_adds_heat = 0.052f;
@@ -3038,7 +3038,7 @@ namespace test_flavours {
 			test_flavours::add_lying_item_dynamic_body(meta);
 			set_density_mult(meta, 1.15f);
 			make_default_gun_container(meta, item_holding_stance::PISTOL_LIKE, 1500.f, 0.f, true);
-			meta.get<invariants::item>().standard_price = 2900;
+			meta.get<invariants::item>().standard_price = 2800;
 			set_chambering_duration_ms(meta, 600.f);
 
 			auto& item = meta.get<invariants::item>();
@@ -3092,7 +3092,7 @@ namespace test_flavours {
 			test_flavours::add_lying_item_dynamic_body(meta);
 			set_density_mult(meta, 0.9f);
 			make_default_gun_container(meta, item_holding_stance::PISTOL_LIKE, 1200.f, 0.f, false);
-			meta.get<invariants::item>().standard_price = 2100;
+			meta.get<invariants::item>().standard_price = 2400;
 			set_chambering_duration_ms(meta, 600.f);
 
 			auto& item = meta.get<invariants::item>();
@@ -3144,7 +3144,7 @@ namespace test_flavours {
 			test_flavours::add_lying_item_dynamic_body(meta);
 			set_density_mult(meta, 1.2f);
 			make_default_gun_container(meta, item_holding_stance::PISTOL_LIKE, 1000.f, 0.f, false);
-			meta.get<invariants::item>().standard_price = 2500;
+			meta.get<invariants::item>().standard_price = 2100;
 			set_chambering_duration_ms(meta, 300.f);
 
 			auto& item = meta.get<invariants::item>();
@@ -3808,7 +3808,7 @@ namespace test_flavours {
 			meta.template get<invariants::item>().space_occupied_per_charge = to_space_units("6.5");
 			meta.get<invariants::item>().draw_mag_over_when_reloading = false;
 			meta.get<invariants::item>().flip_when_reloading = true;
-			meta.get<invariants::item>().gratis_ammo_pieces_with_first = 14;
+			meta.get<invariants::item>().gratis_ammo_pieces_with_first = 2;
 
 			auto& slots = meta.get<invariants::container>().slots;
 

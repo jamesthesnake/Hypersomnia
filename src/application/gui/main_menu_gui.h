@@ -45,6 +45,11 @@ struct main_menu_gui {
 		const augs::event::change change,
 		B button_callback
 	) {
+		if (change.was_pressed(augs::event::keys::key::D)) {
+			button_callback(main_menu_button_type::DOWNLOAD_MAPS);
+			return true;
+		}
+
 		if (change.was_pressed(augs::event::keys::key::E)) {
 			button_callback(main_menu_button_type::EDITOR);
 			return true;
@@ -55,13 +60,18 @@ struct main_menu_gui {
 			return true;
 		}
 
+		if (change.was_pressed(augs::event::keys::key::T)) {
+			button_callback(main_menu_button_type::TUTORIAL);
+			return true;
+		}
+
 		if (change.was_pressed(augs::event::keys::key::S)) {
 			button_callback(main_menu_button_type::SETTINGS);
 			return true;
 		}
 
 		if (change.was_pressed(augs::event::keys::key::C)) {
-			button_callback(main_menu_button_type::CONNECT_TO_OFFICIAL_SERVER);
+			button_callback(main_menu_button_type::PLAY_ON_THE_OFFICIAL_SERVER);
 			return true;
 		}
 
@@ -116,12 +126,15 @@ struct main_menu_gui {
 		const auto& gui_font = context.get_gui_font();
 
 		root.set_menu_buttons_colors(cyan);
+		root.buttons[std::size_t(main_menu_button_type::DOWNLOAD_MAPS)].colorize = green;
 		root.set_menu_buttons_sizes(context.get_necessary_images(), gui_font, { 1000, 1000 });
 
 		for (std::size_t i = 0; i < root.buttons.size(); ++i) {
 			const auto e = static_cast<main_menu_button_type>(i);
 			root.buttons[i].set_complete_caption(format_enum(e));
 		}
+
+		root.buttons[0].is_discord = true;
 
 		world.advance_elements(context, vdt);
 		world.rebuild_layouts(context);
@@ -136,7 +149,11 @@ struct main_menu_gui {
 		const auto output = context.get_output();
 		const auto screen_size = context.get_screen_size();
 
-		output.color_overlay(screen_size, rgba{ 0, 0, 0, 140 });
+		const bool draw_overlay = false;
+
+		if (draw_overlay) {
+			output.color_overlay(screen_size, rgba{ 0, 0, 0, 140 });
+		}
 
 		root.draw_background_behind_buttons(context);
 		world.draw(context);

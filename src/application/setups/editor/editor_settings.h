@@ -4,12 +4,22 @@
 
 #include "augs/drawing/grid_render_settings.h"
 
+enum class editor_autosave_load_option {
+	// GEN INTROSPECTOR enum class editor_autosave_load_option
+	AUTOSAVED_VERSION,
+	LAST_SAVED_VERSION,
+	COUNT
+	// END GEN INTROSPECTOR
+};
+
 struct editor_autosave_settings {
 	// GEN INTROSPECTOR struct editor_autosave_settings
 	bool on_lost_focus = true;
 
 	bool periodically = true;
 	double once_every_min = 1.0;
+	editor_autosave_load_option if_loaded_autosave_show = editor_autosave_load_option::AUTOSAVED_VERSION;
+	bool alert_when_loaded_autosave = true;
 	// END GEN INTROSPECTOR
 
 	bool interval_changed(const editor_autosave_settings b) const {
@@ -62,6 +72,7 @@ struct editor_action_notification_settings {
 struct editor_settings {
 	// GEN INTROSPECTOR struct editor_settings
 	editor_autosave_settings autosave;
+	bool warp_cursor_when_moving_nodes = false;
 	bool keep_source_nodes_selected_on_mirroring = false;
 
 	editor_grid_settings grid;

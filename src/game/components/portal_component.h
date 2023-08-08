@@ -5,6 +5,7 @@
 #include "augs/misc/timing/stepped_timing.h"
 #include "game/detail/view_input/continuous_rings_input.h"
 #include "game/enums/portal_enums.h"
+#include "game/enums/faction_type.h"
 
 namespace components {
 	struct portal {
@@ -39,12 +40,15 @@ namespace components {
 
 		augs::maybe<continuous_rings_input> rings_effect;
 		augs::maybe<force_field_def> force_field;
+		augs::maybe<hazard_def> hazard;
 
 		portal_exit_direction exit_direction = portal_exit_direction::PORTAL_DIRECTION;
 		portal_exit_position exit_position = portal_exit_position::PORTAL_CENTER;
 
 		float light_size_mult = 1.0f;
 		rgba light_color = white;
+		per_actual_faction<bool> reacts_to_factions = { true, true, true };
+		bool ignore_walking_characters = false;
 		// END GEN INTROSPECTOR
 
 		portal() {

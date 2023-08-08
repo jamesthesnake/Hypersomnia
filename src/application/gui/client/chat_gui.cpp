@@ -7,16 +7,16 @@
 #include "augs/gui/text/printer.h"
 #include "augs/drawing/drawing.h"
 #include "augs/string/format_enum.h"
-#include "game/messages/game_notification.h"
+#include "game/messages/mode_notification.h"
 #include "augs/templates/identity_templates.h"
 
 void LOG_NOFORMAT(const std::string& f);
 
 const auto standard_gray_v = rgba(200, 200, 200, 255);
 
-bool chat_gui_state::add_entry_from_game_notification(
+bool chat_gui_state::add_entry_from_mode_notification(
 	const net_time_t timestamp,
-	const messages::game_notification& msg,
+	const messages::mode_notification& msg,
 	const mode_player_id current_mode_id
 ) {
 	using namespace messages;
@@ -177,6 +177,12 @@ chat_gui_entry chat_gui_entry::from(
 		case chat_target_type::DOWNLOADING_FILES:
 			new_entry.author.clear();
 			new_entry.message = typesafe_sprintf("%x is downloading files.", author);
+			new_entry.overridden_message_color = yellow;
+			break;
+
+		case chat_target_type::DOWNLOADING_FILES_DIRECTLY:
+			new_entry.author.clear();
+			new_entry.message = typesafe_sprintf("%x is downloading files directly over UDP.", author);
 			new_entry.overridden_message_color = yellow;
 			break;
 

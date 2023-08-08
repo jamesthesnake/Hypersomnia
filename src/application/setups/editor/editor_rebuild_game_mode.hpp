@@ -31,8 +31,8 @@ auto to_game_requested_equipment(
 	if (requested.backpack) {
 		const auto default_backpack = 
 			associated_faction == faction_type::METROPOLIS ?
-			test_container_items::METROPOLIS_BACKPACK :
-			test_container_items::RESISTANCE_BACKPACK
+			test_tool_items::METROPOLIS_BACKPACK :
+			test_tool_items::RESISTANCE_BACKPACK
 		;
 
 		result.back_wearable = to_entity_flavour_id(default_backpack);
@@ -57,6 +57,8 @@ auto to_game_requested_equipment(
 
 		result.other_equipment.push_back({ num_explosives, to_flavour(requested.explosive) });
 	}
+
+	fill_range(result.spells_to_give, requested.all_spells);
 
 	return result;
 }
@@ -194,6 +196,9 @@ auto setup_ruleset_from_editor_mode(
 
 			rules.view.show_info_icons_of_opponents = true;
 			rules.view.show_money_of_opponents = true;
+
+			/* Always spawn */
+			rules.allow_spawn_for_secs_after_starting = static_cast<uint32_t>(-1);
 
 			if (rules.respawn_after_ms <= 0.0f) {
 				rules.respawn_after_ms = 20.0f;

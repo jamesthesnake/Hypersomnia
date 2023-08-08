@@ -4,6 +4,8 @@
 
 struct editor_view;
 struct editor_project;
+struct editor_project_about;
+struct editor_project_meta;
 
 struct editor_resource_pools;
 struct editor_official_resource_map;
@@ -16,12 +18,17 @@ namespace editor_project_readwrite {
 		Otherwise augs::json_deserialization_error will be thrown upon encountering any problem.
 	*/
 
+	struct reading_settings {
+		bool strict = true;
+		bool read_inactive_nodes = true;
+	};
+
 	editor_project read_project_json(
 		const augs::path_type& parent_folder,
 		const std::string& loaded_project_json,
 		const editor_resource_pools& officials,
 		const editor_official_resource_map& officials_map,
-		const bool strict,
+		const reading_settings settings = reading_settings(),
 		augs::secure_hash_type* output_arena_hash = nullptr
 	);
 
@@ -29,7 +36,7 @@ namespace editor_project_readwrite {
 		const augs::path_type& json_path,
 		const editor_resource_pools& officials,
 		const editor_official_resource_map& officials_map,
-		const bool strict,
+		const reading_settings settings = reading_settings(),
 		augs::secure_hash_type* output_arena_hash = nullptr
 	);
 
@@ -42,6 +49,7 @@ namespace editor_project_readwrite {
 
 	editor_project_about read_only_project_about(const augs::path_type& json_path);
 	editor_project_meta read_only_project_meta(const augs::path_type& json_path);
+	version_timestamp_string read_only_project_timestamp(const std::string& project_json);
 
 	using external_resource_database = std::vector<std::pair<augs::path_type, augs::secure_hash_type>>;
 

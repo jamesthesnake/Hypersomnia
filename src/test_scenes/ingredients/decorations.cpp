@@ -498,7 +498,7 @@ namespace test_flavours {
 		));
 
 		flavour_with_sound(
-			test_sound_decorations::PORTAL_BEGIN_ENTERING,
+			test_sound_decorations::PORTAL_BEGIN_ENTERING_SOUND,
 			test_scene_sound_id::PORTAL_BEGIN_ENTERING,
 			augs::distance_model::INVERSE_DISTANCE_CLAMPED,
 			-1,
@@ -506,7 +506,7 @@ namespace test_flavours {
 		);
 
 		flavour_with_sound(
-			test_sound_decorations::PORTAL_ENTER,
+			test_sound_decorations::PORTAL_ENTER_SOUND,
 			test_scene_sound_id::PORTAL_ENTER,
 			augs::distance_model::INVERSE_DISTANCE_CLAMPED,
 			-1,
@@ -514,8 +514,24 @@ namespace test_flavours {
 		);
 
 		flavour_with_sound(
-			test_sound_decorations::PORTAL_EXIT,
+			test_sound_decorations::PORTAL_EXIT_SOUND,
 			test_scene_sound_id::PORTAL_EXIT,
+			augs::distance_model::INVERSE_DISTANCE_CLAMPED,
+			-1,
+			-1
+		);
+
+		flavour_with_sound(
+			test_sound_decorations::FIRE_DAMAGE,
+			test_scene_sound_id::FIRE_DAMAGE,
+			augs::distance_model::INVERSE_DISTANCE_CLAMPED,
+			-1,
+			-1
+		);
+
+		flavour_with_sound(
+			test_sound_decorations::LAVA_AMBIENCE,
+			test_scene_sound_id::LAVA_AMBIENCE,
 			augs::distance_model::INVERSE_DISTANCE_CLAMPED,
 			-1,
 			-1
@@ -699,19 +715,25 @@ namespace test_flavours {
 		);
 
 		flavour_with_particles(
-			test_particles_decorations::PORTAL_ENTER,
+			test_particles_decorations::LAVA_CIRCLE,
+			test_scene_particle_effect_id::LAVA_CIRCLE,
+			white
+		);
+
+		flavour_with_particles(
+			test_particles_decorations::PORTAL_ENTER_PARTICLES,
 			test_scene_particle_effect_id::PORTAL_ENTER,
 			white
 		);
 
 		flavour_with_particles(
-			test_particles_decorations::PORTAL_EXIT,
+			test_particles_decorations::PORTAL_EXIT_PARTICLES,
 			test_scene_particle_effect_id::PORTAL_EXIT,
 			white
 		);
 
 		flavour_with_particles(
-			test_particles_decorations::PORTAL_BEGIN_ENTERING,
+			test_particles_decorations::PORTAL_BEGIN_ENTERING_PARTICLES,
 			test_scene_particle_effect_id::PORTAL_BEGIN_ENTERING,
 			white
 		);

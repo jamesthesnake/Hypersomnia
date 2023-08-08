@@ -126,7 +126,7 @@ bool setup_entity_from_node(
 		marker.letter = editable.letter;
 
 		if constexpr(std::is_same_v<N, editor_area_marker_node>) {
-			if (resource.editable.type == area_marker_type::PORTAL) {
+			if (::is_portal_based(resource.editable.type)) {
 				dependent_on_other_nodes = true;
 
 				if (const auto portal = agg.template find<components::portal>()) {
@@ -140,11 +140,13 @@ bool setup_entity_from_node(
 					to.exit_cooldown_ms = from.exit_cooldown_ms;
 
 					to.ignore_airborne_characters = from.ignore_airborne_characters;
+					to.ignore_walking_characters = from.ignore_walking_characters;
 
 					to.enter_time_ms = from.enter_time_ms;
 					to.travel_time_ms = from.travel_time_ms;
 
 					to.force_field = from.force_field;
+					to.hazard = from.hazard;
 
 					if (from.disable_all_entry_effects) {
 						to.light_size_mult = 0.0f;
@@ -185,11 +187,21 @@ bool setup_entity_from_node(
 							particles->modifier = static_cast<const particle_effect_modifier&>(from.ambience_particles);
 							particles->modifier.sanitize();
 
-							const auto radius = float(editable.size.smaller_side()) / 2;
-							const auto basic_radius = 128.0f;
+							// for now always force rectangular particles for HAZARD because rectangular LAVA CIRCLE looks better (I know ugly)
+							if (resource.editable.type == area_marker_type::HAZARD || editable.shape == marker_shape_type::BOX) {
+								const auto basic_area = 128 * 128 * PI<float>;
+								const auto this_area = editable.size.area() / 1.4f;
 
-							particles->modifier.radius = radius;
-							particles->modifier.scale_amounts *= radius / basic_radius;
+								particles->modifier.box = editable.size;
+								particles->modifier.scale_amounts *= this_area / basic_area;
+							}
+							else {
+								const auto radius = float(editable.size.smaller_side()) / 2;
+								const auto basic_radius = 128.0f;
+
+								particles->modifier.radius = radius;
+								particles->modifier.scale_amounts *= radius / basic_radius;
+							}
 						}
 					}
 
@@ -220,6 +232,7 @@ bool setup_entity_from_node(
 
 					to.custom_filter = filters[predefined_filter_type::PORTAL];
 					to.custom_filter.maskBits = from.reacts_to.get_mask_bits(); 
+					to.reacts_to_factions = from.reacts_to_factions;
 				}
 			}
 

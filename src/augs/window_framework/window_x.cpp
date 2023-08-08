@@ -118,7 +118,7 @@ namespace augs {
 		XSetEventQueueOwner(display, XCBOwnsEventQueue);
 
 		/* Find XCB screen */
-		xcb_screen_t *screen = 0;
+		screen = 0;
 
 		LOG("X: getting setup with xcb_get_setup.");
 		const auto setup = xcb_get_setup(connection);
@@ -350,6 +350,14 @@ namespace augs {
 			XISelectEvents(dpy, root, &em, 1);
 
 			XSync(dpy, True);
+		}
+
+		xcb_set_input_focus(connection, XCB_INPUT_FOCUS_POINTER_ROOT, window_id, XCB_CURRENT_TIME);
+		xcb_flush(connection);
+		
+		/* Set it again because it sometimes doesn't properly do it for the first time */
+		if (settings.fullscreen) {
+			set_fullscreen_hint(true);
 		}
 	}
 
@@ -691,7 +699,7 @@ namespace augs {
 							smallest_raw_y_unit = std::min(std::abs(y), smallest_raw_y_unit);
 						}
 
-						if (is_active() && (current_settings.is_raw_mouse_input() || mouse_pos_paused)) {
+						if (is_active() && (current_settings.draws_own_cursor() || mouse_pos_paused)) {
 							auto ch = do_raw_motion({
 								static_cast<short>(x / smallest_raw_x_unit),
 								static_cast<short>(y / smallest_raw_y_unit) 
@@ -804,13 +812,44 @@ namespace augs {
 		}
 	}
 
-	void window::set_fullscreen_hint(const bool) {
-// TODO: actually implement fullscreen
-#if 0
-xcb_ewmh_connection_t EWMH;
-xcb_intern_atom_cookie_t *EWMHCookie = xcb_ewmh_init_atoms(connection, &EWMH);
-xcb_ewmh_init_atoms_replies(&EWMH, EWMHCookie, NULL);
-#endif
+	void window::set_fullscreen_hint(const bool fs) {
+		/* Find the atom that represents the _NET_WM_STATE_FULLSCREEN property */
+		xcb_intern_atom_cookie_t wm_state_cookie = xcb_intern_atom(connection, 0, 13, "_NET_WM_STATE");
+		xcb_intern_atom_cookie_t wm_state_fullscreen_cookie = xcb_intern_atom(connection, 0, 24, "_NET_WM_STATE_FULLSCREEN");
+
+		xcb_intern_atom_reply_t* wm_state_reply = xcb_intern_atom_reply(connection, wm_state_cookie, NULL);
+		xcb_intern_atom_reply_t* wm_state_fullscreen_reply = xcb_intern_atom_reply(connection, wm_state_fullscreen_cookie, NULL);
+
+		if (wm_state_reply && wm_state_fullscreen_reply) {
+			xcb_atom_t wm_state = wm_state_reply->atom;
+			xcb_atom_t wm_state_fullscreen = wm_state_fullscreen_reply->atom;
+
+			free(wm_state_reply);
+			free(wm_state_fullscreen_reply);
+
+			/* Send a client message to the X server to change the state of the window */
+			xcb_client_message_event_t ev;
+			memset(&ev, 0, sizeof(xcb_client_message_event_t));
+
+			ev.response_type = XCB_CLIENT_MESSAGE;
+			ev.window = window_id;
+			ev.type = wm_state;
+			ev.format = 32;
+			ev.data.data32[0] = fs ? 1 : 0; // _NET_WM_STATE_ADD
+			ev.data.data32[1] = wm_state_fullscreen;
+			ev.data.data32[2] = XCB_ATOM_NONE;
+			ev.data.data32[3] = 0;
+
+			xcb_send_event(connection, 0, screen->root, XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY | XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT, (char*)&ev);
+		} 
+		else {
+			if (wm_state_reply) free(wm_state_reply);
+			if (wm_state_fullscreen_reply) free(wm_state_fullscreen_reply);
+			LOG("Cannot set fullscreen mode: _NET_WM_STATE or _NET_WM_STATE_FULLSCREEN atoms not found");
+		}
+
+		/* Flush all XCB requests */
+		xcb_flush(connection);
 	}
 
 	xywhi window::get_window_rect_impl() const { 
@@ -866,6 +905,7 @@ xcb_ewmh_init_atoms_replies(&EWMH, EWMHCookie, NULL);
 	void window::set_cursor_pos(vec2i pos) {
     	XWarpPointer(display, None, window_id, 0, 0, 0, 0, pos.x, pos.y);
 		XSync(display, False);
+		last_mouse_pos = pos;
 	}
 
 	bool window::set_cursor_clipping_impl(const bool flag) {

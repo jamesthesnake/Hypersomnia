@@ -149,11 +149,11 @@ void illuminated_rendering(const illuminated_rendering_input in) {
 	/* Drawing lambdas */
 
 	auto draw_particles = [&](const particle_layer layer) {
-		renderer.call_triangles(in.drawn_particles.diffuse[layer]);
+		renderer.call_triangles_direct_ptr(in.drawn_particles.diffuse[layer]);
 	};
 
 	auto draw_particles_neons = [&]() {
-		renderer.call_triangles(in.drawn_particles.neons);
+		renderer.call_triangles_direct_ptr(in.drawn_particles.neons);
 	};
 
 #if BUILD_STENCIL_BUFFER
@@ -450,7 +450,7 @@ void illuminated_rendering(const illuminated_rendering_input in) {
 		renderer.call_and_clear_triangles();
 	};
 
-	auto occlude_neons = [&]() {
+	auto neon_occlusion_callback = [&](bool is_foreground) {
 		auto& shader = shaders.neon_occluder;
 
 		set_shader_with_matrix(shader);
@@ -458,8 +458,10 @@ void illuminated_rendering(const illuminated_rendering_input in) {
 		const auto& ambient_color = cosm.get_common_significant().light.ambient_color;
 		set_uniform(shader, U::global_color, ambient_color);
 
-		if (settings.occlude_neons_under_sentiences) {
-			draw_sentiences(*shader);
+		if (!is_foreground) {
+			if (settings.occlude_neons_under_sentiences) {
+				draw_sentiences(*shader);
+			}
 		}
 	};
 
@@ -475,7 +477,7 @@ void illuminated_rendering(const illuminated_rendering_input in) {
 			*shaders.light, 
 			*shaders.textured_light, 
 			*shaders.standard, 
-			occlude_neons,
+			neon_occlusion_callback,
 			[&]() {
 				draw_particles_neons();
 
