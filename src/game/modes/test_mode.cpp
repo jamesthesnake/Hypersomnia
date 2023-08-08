@@ -6,7 +6,7 @@
 #include "game/cosmos/entity_handle.h"
 #include "game/detail/inventory/generate_equipment.h"
 #include "game/detail/snap_interpolation_to_logical.h"
-#include "game/messages/game_notification.h"
+#include "game/messages/mode_notification.h"
 #include "augs/templates/logically_empty.h"
 #include "game/modes/detail/delete_with_held_items.hpp"
 
@@ -46,16 +46,30 @@ void test_mode::init_spawned(const input_type in, const entity_id id, const logi
 		}
 
 		::resurrect(step, typed_handle);
-
-		auto& sentience = typed_handle.template get<components::sentience>();
-		fill_range(sentience.learnt_spells, true);
 	});
 }
 
-void test_mode::teleport_to_next_spawn(const input_type in, const entity_id id) {
+void test_mode::teleport_to_next_spawn(const input_type in, const mode_player_id mode_id, const entity_id id) {
 	const auto handle = in.cosm[id];
 
 	handle.dispatch_on_having_all<components::sentience>([&](const auto typed_handle) {
+		auto tp_to = [&](const auto spawn) {
+			const auto spawn_transform = spawn.get_logic_transform();
+			typed_handle.set_logic_transform(spawn_transform);
+			::snap_interpolated_to(typed_handle, spawn_transform);
+
+			if (const auto crosshair = typed_handle.find_crosshair()) {
+				crosshair->base_offset = spawn_transform.get_direction() * 200;
+			}
+		};
+
+		if (const auto p = find(mode_id)) {
+			if (const auto dedicated = in.cosm[p->dedicated_spawn]) {
+				tp_to(dedicated);
+				return;
+			}
+		}
+
 		const auto faction = typed_handle.get_official_faction();
 		const auto num_spawns = get_num_faction_spawns(in.cosm, faction);
 
@@ -71,14 +85,7 @@ void test_mode::teleport_to_next_spawn(const input_type in, const entity_id id) 
 		normalize_spawn_index();
 
 		if (const auto spawn = ::find_faction_spawn(in.cosm, faction, current_spawn_index)) {
-			const auto spawn_transform = spawn.get_logic_transform();
-			typed_handle.set_logic_transform(spawn_transform);
-			::snap_interpolated_to(typed_handle, spawn_transform);
-
-			if (const auto crosshair = typed_handle.find_crosshair()) {
-				crosshair->base_offset = spawn_transform.get_direction() * 200;
-			}
-
+			tp_to(spawn);
 			normalize_spawn_index();
 		}
 	});
@@ -96,7 +103,7 @@ mode_player_id test_mode::add_player(input_type in, const entity_name_str& name,
 void test_mode::remove_player(input_type in, const logic_step step, const mode_player_id id) {
 	const auto controlled_character_id = lookup(id);
 
-	::delete_with_held_items(in, step, in.cosm[controlled_character_id]);
+	::delete_with_held_items_except({}, step, in.cosm[controlled_character_id]);
 
 	erase_element(players, id);
 }
@@ -130,12 +137,12 @@ void test_mode::create_controlled_character_for(const input_type in, const mode_
 					}
 				}
 				else {
-					teleport_to_next_spawn(in, new_character);
+					teleport_to_next_spawn(in, id, new_character);
 				}
 
 				pending_inits.push_back(new_character);
 
-				cosmic::set_specific_name(new_character, entry->get_chosen_name());
+				cosmic::set_specific_name(new_character, entry->get_nickname());
 				entry->controlled_character_id = new_character.get_id();
 			}
 		);
@@ -174,7 +181,7 @@ bool test_mode::add_player_custom(const input_type in, const add_player_input& a
 		return false;
 	}
 
-	new_player.session.chosen_name = add_in.name;
+	new_player.session.nickname = add_in.name;
 	new_player.session.id = next_session_id;
 	new_player.session.faction = considered_faction;
 	++next_session_id;
@@ -193,10 +200,10 @@ void test_mode::add_or_remove_players(const input_type in, const mode_entropy& e
 		(void)result;
 
 		if (const auto entry = find(a.id)) {
-			messages::game_notification notification;
+			messages::mode_notification notification;
 
 			notification.subject_mode_id = a.id;
-			notification.subject_name = entry->get_chosen_name();
+			notification.subject_name = entry->get_nickname();
 			notification.payload = messages::joined_or_left::JOINED;
 
 			step.post_message(std::move(notification));
@@ -205,10 +212,10 @@ void test_mode::add_or_remove_players(const input_type in, const mode_entropy& e
 
 	if (logically_set(g.removed_player)) {
 		if (const auto entry = find(g.removed_player)) {
-			messages::game_notification notification;
+			messages::mode_notification notification;
 
 			notification.subject_mode_id = g.removed_player;
-			notification.subject_name = entry->get_chosen_name();
+			notification.subject_name = entry->get_nickname();
 			notification.payload = messages::joined_or_left::LEFT;
 
 			step.post_message(std::move(notification));
@@ -278,7 +285,13 @@ void test_mode::mode_pre_solve(input_type in, const mode_entropy& entropy, logic
 			in.rules.respawn_after_ms,
 			sentience.when_knocked_out
 		)) {
-			teleport_to_next_spawn(in, typed_handle);
+			const auto player_id = lookup(typed_handle.get_id());
+
+			if (!find(player_id)->allow_respawn) {
+				return;
+			}
+
+			teleport_to_next_spawn(in, player_id, typed_handle);
 			init_spawned(in, typed_handle, step);
 
 			sentience.when_knocked_out = {};
@@ -286,6 +299,52 @@ void test_mode::mode_pre_solve(input_type in, const mode_entropy& entropy, logic
 	});
 
 	remove_old_lying_items(in, step);
+
+	if (auto character = in.cosm[infinite_ammo_for]) {
+		auto guns = character.get_wielded_guns();
+
+		for (auto g : guns) {
+			const auto weapon = in.cosm[g];
+
+			const auto ammo_piece_flavour = ::calc_purchasable_ammo_piece(weapon);
+
+			auto total_ammo_for_this_weapon = 0;
+
+			character.for_each_contained_item_recursive(
+				[&](const auto& ammo_piece) {
+					if (entity_flavour_id(ammo_piece.get_flavour_id()) == weapon.get_flavour_id()) {
+						return recursive_callback_result::CONTINUE_DONT_RECURSE;
+					}
+
+					if (entity_flavour_id(ammo_piece.get_flavour_id()) == ammo_piece_flavour) {
+						auto count_charge_stack = [&](const auto& ammo_stack) {
+							if (ammo_stack.template has<invariants::cartridge>()) {
+								total_ammo_for_this_weapon += ammo_stack.template get<components::item>().get_charges();
+							}
+						};
+
+						count_charge_stack(ammo_piece);
+
+						ammo_piece.for_each_contained_item_recursive(count_charge_stack);
+
+						return recursive_callback_result::CONTINUE_DONT_RECURSE;
+					}
+
+					return recursive_callback_result::CONTINUE_AND_RECURSE;
+				},
+				std::nullopt
+			);
+
+			if (total_ammo_for_this_weapon == 0) {
+				auto access = allocate_new_entity_access();
+				requested_equipment eq;
+				eq.non_standard_mag = ammo_piece_flavour;
+				eq.num_given_ammo_pieces = 1;
+				eq.perform_recoils = false;
+				eq.generate_for(access, character, step, 0);
+			}
+		}
+	}
 }
 
 arena_migrated_session test_mode::emigrate() const {
@@ -331,12 +390,17 @@ auto test_mode::find_player_by_impl(S& self, const E& identifier) {
 		auto& player_data = it.second;
 
 		if constexpr(std::is_same_v<entity_name_str, E>) {
-			if (player_data.session.chosen_name == identifier) {
+			if (player_data.session.nickname == identifier) {
 				return std::addressof(it);
 			}
 		}
 		else if constexpr(std::is_same_v<session_id_type, E>) {
 			if (player_data.session.id == identifier) {
+				return std::addressof(it);
+			}
+		}
+		else if constexpr(std::is_same_v<entity_id, E>) {
+			if (player_data.controlled_character_id == identifier) {
 				return std::addressof(it);
 			}
 		}
@@ -369,16 +433,16 @@ const test_mode_player* test_mode::find(const session_id_type& session_id) const
 	return nullptr;
 }
 
-test_mode_player* test_mode::find_player_by(const entity_name_str& chosen_name) {
-	if (const auto r = find_player_by_impl(*this, chosen_name)) {
+test_mode_player* test_mode::find_player_by(const entity_name_str& nickname) {
+	if (const auto r = find_player_by_impl(*this, nickname)) {
 		return std::addressof(r->second);
 	}
 
 	return nullptr;
 }
 
-const test_mode_player* test_mode::find_player_by(const entity_name_str& chosen_name) const {
-	if (const auto r = find_player_by_impl(*this, chosen_name)) {
+const test_mode_player* test_mode::find_player_by(const entity_name_str& nickname) const {
+	if (const auto r = find_player_by_impl(*this, nickname)) {
 		return std::addressof(r->second);
 	}
 
@@ -409,8 +473,8 @@ uint32_t test_mode::get_max_num_active_players(const const_input) const {
 }
 
 bool test_mode_player::operator<(const test_mode_player& b) const {
-	const auto ao = arena_player_order { get_chosen_name(), stats.calc_score() };
-	const auto bo = arena_player_order { b.get_chosen_name(), b.stats.calc_score() };
+	const auto ao = arena_player_order { get_nickname(), stats.calc_score() };
+	const auto bo = arena_player_order { b.get_nickname(), b.stats.calc_score() };
 
 	return ao < bo;
 }

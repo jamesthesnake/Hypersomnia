@@ -88,6 +88,7 @@ bool force_show_extra_ammo = false;
 \
 	MULTIPROPERTY("Backpack", field.backpack);\
 	MULTIPROPERTY("Electric armor", field.electric_armor);\
+	MULTIPROPERTY("All spells", field.all_spells);\
 	if (force_show_extra_ammo || insp.field.firearm.is_set()) {\
 	MULTIPROPERTY("Extra ammo pieces", field.extra_ammo_pieces);\
 	}\
@@ -557,11 +558,14 @@ bool edit_property(
 			return true;
 		}
 	}
-	else if constexpr(is_constant_size_string_v<T>) {
-		if (input_text(label, property, ImGuiInputTextFlags_EnterReturnsTrue)) { 
-			result = typesafe_sprintf("Edited %x in %x", label);
+	else if constexpr(std::is_same_v<T, std::string>) {
+		if (input_multiline_text(label, property, 3)) {
+			result = "Edited %x";
 			return true;
 		}
+	}
+	else {
+		static_assert(always_false_v<T>, "Non-exhaustive if constexpr");
 	}
 
 	return false;
@@ -649,7 +653,7 @@ EDIT_FUNCTION(editor_sprite_node_editable& insp, T& es, editor_sprite_resource& 
 		MULTIPROPERTY("Randomize color wave offset", randomize_color_wave_offset);
 	}
 
-	const bool is_animation = !resource.animation_frames.empty();
+	const bool is_animation = !resource.animation_frames.empty() || (resource.official_tag.has_value() && std::holds_alternative<test_dynamic_decorations>(resource.official_tag.value()));
 
 	if (is_animation) {
 		ImGui::Separator();
@@ -716,6 +720,19 @@ EDIT_FUNCTION(editor_ammunition_node_editable& insp, T& es) {
 
 	return result;
 }
+
+EDIT_FUNCTION(editor_tool_node_editable& insp, T& es) {
+	auto special_handler = default_widget_handler();
+	using namespace augs::imgui;
+	bool last_result = false;
+	std::string result;
+
+	MULTIPROPERTY_POSITION(pos);
+	MULTIPROPERTY("Rotation", rotation);
+
+	return result;
+}
+
 
 EDIT_FUNCTION(editor_melee_node_editable& insp, T& es) {
 	auto special_handler = default_widget_handler();
@@ -844,14 +861,17 @@ EDIT_FUNCTION(editor_area_marker_node_editable& insp, T& es, const editor_area_m
 		MULTIPROPERTY("Letter", letter);
 	}
 
-	const bool has_shape = type == area_marker_type::PORTAL;
+	const bool has_shape = ::is_portal_based(type);
 
 	if (has_shape) {
 		MULTIPROPERTY("Shape", shape);
 		tooltip_on_hover("Note that rectangular effects for portals are not supported yet,\nbut the physical sensor itself will work just fine as a box.");
 	}
 
-	if (type == area_marker_type::PORTAL) {
+	const bool is_hurt = type == area_marker_type::HAZARD;
+	(void)is_hurt;
+
+	if (::is_portal_based(type)) {
 		ImGui::ColorButton("##Cbutton", insp.as_portal.get_icon_color().operator ImVec4());
 
 		ImGui::SameLine();
@@ -897,6 +917,9 @@ EDIT_FUNCTION(editor_area_marker_node_editable& insp, T& es, const editor_area_m
 		MULTIPROPERTY("Ignore airborne characters", as_portal.ignore_airborne_characters);
 		tooltip_on_hover("'Airborne' characters are ones that only just exited a portal or e.g. during dash.\nThis is useful for making portals that only react when you 'land'.\nA perfect usecase is the background portal on 'surf' maps\nthat teleports you back to the beginning if you happen to miss a trampoline.");
 
+
+		MULTIPROPERTY("Ignore walking characters", as_portal.ignore_walking_characters);
+		tooltip_on_hover("Characters walking silently will be unaffected by this portal.");
 
 		if (!trampoline) {
 			MULTIPROPERTY("Enter time (ms)", as_portal.enter_time_ms);
@@ -978,6 +1001,31 @@ EDIT_FUNCTION(editor_area_marker_node_editable& insp, T& es, const editor_area_m
 		}
 
 		{
+			MULTIPROPERTY("##hazard", as_portal.hazard.is_enabled);
+
+			if (last_result) {
+				if (insp.as_portal.hazard.is_enabled) {
+					result = "Enabled hazard in %x";
+				}
+				else {
+					result = "Disabled hazard in %x";
+				}
+			}
+
+			ImGui::SameLine();
+
+			auto disabled = maybe_disabled_only_cols(!insp.as_portal.hazard.is_enabled);
+
+			auto scope = augs::imgui::scoped_tree_node_ex("Hazard");
+
+			if (scope) {
+				auto actually_disabled = maybe_disabled_cols(!insp.as_portal.hazard.is_enabled);
+
+				MULTIPROPERTY("Damage", as_portal.hazard.value.damage);
+			}
+		}
+
+		{
 			MULTIPROPERTY("##ForceField", as_portal.force_field.is_enabled);
 
 			if (last_result) {
@@ -1037,6 +1085,14 @@ EDIT_FUNCTION(editor_area_marker_node_editable& insp, T& es, const editor_area_m
 		MULTIPROPERTY("Lying items", as_portal.reacts_to.lying_items);
 		MULTIPROPERTY("Shells", as_portal.reacts_to.shells);
 		MULTIPROPERTY("Obstacles", as_portal.reacts_to.obstacles);
+
+		ImGui::Separator();
+		text_color("Reacts to factions", yellow);
+		ImGui::Separator();
+		
+		MULTIPROPERTY("Resistance", as_portal.reacts_to_factions.resistance);
+		MULTIPROPERTY("Metropolis", as_portal.reacts_to_factions.metropolis);
+		MULTIPROPERTY("Atlantis", as_portal.reacts_to_factions.atlantis);
 
 		ImGui::Separator();
 		text_color("AS EXIT", orange);
@@ -1100,6 +1156,27 @@ EDIT_FUNCTION(editor_area_marker_node_editable& insp, T& es, const editor_area_m
 			MULTIPROPERTY("Exit cooldown (ms)", as_portal.exit_cooldown_ms);
 			tooltip_on_hover("Since the exit is a portal that can be entered too,\nwe need to ignore it for a split second,\nto prevent an infinite loop where an object perpetually teleports back and forth.");
 
+		}
+
+		MULTIPROPERTY("Context tip", as_portal.context_tip.is_enabled);
+
+		if (last_result) {
+			if (insp.as_portal.context_tip.is_enabled) {
+				result = "Enabled Context tip in %x";
+			}
+			else {
+				result = "Disabled Context tip in %x";
+			}
+		}
+
+		{
+			auto scope = scoped_id("CONTEXTTIP");
+
+			if (insp.as_portal.context_tip.is_enabled) {
+				auto ind = scoped_indent();
+
+				MULTIPROPERTY("##ContextTip", as_portal.context_tip.value);
+			}
 		}
 	}
 
@@ -1653,6 +1730,12 @@ EDIT_FUNCTION(
 			MULTIPROPERTY("Angular damping", as_physical.angular_damping);
 		}
 
+		MULTIPROPERTY("Walk-through", as_physical.is_walk_through);
+
+		if (ImGui::IsItemHovered()) {
+			text_tooltip("If enabled, won't collide with characters.\nImagine a smoke that blocks the line of sight,\nbut lets all physical bodies through.");
+		}
+
 		MULTIPROPERTY("See-through", as_physical.is_see_through);
 
 		if (ImGui::IsItemHovered()) {
@@ -1988,6 +2071,17 @@ EDIT_FUNCTION(editor_ammunition_resource_editable& insp, T& es) {
 	return result;
 }
 
+EDIT_FUNCTION(editor_tool_resource_editable& insp, T& es) {
+	auto special_handler = default_widget_handler();
+	using namespace augs::imgui;
+	bool last_result = false;
+	std::string result;
+
+	(void)insp; (void)es; (void)last_result;
+
+	return result;
+}
+
 EDIT_FUNCTION(editor_melee_resource_editable& insp, T& es) {
 	auto special_handler = default_widget_handler();
 	using namespace augs::imgui;
@@ -2055,7 +2149,9 @@ SINGLE_EDIT_FUNCTION(editor_project_about& insp) {
 	using namespace augs::imgui;
 	std::string result;
 
-	PROPERTY("Author", author);
+	if (input_text("Author", insp.author)) {
+		result = "Edited Author in %x";
+	}
 
 	ImGui::Separator();
 
@@ -2137,6 +2233,138 @@ EDIT_FUNCTION(
 	using namespace augs::imgui;
 	std::string result;
 	bool last_result = false;
+
+	if (auto scope = augs::imgui::scoped_tree_node_ex("Layers")) {
+		if (auto scope = augs::imgui::scoped_tree_node_ex("Activate")) {
+			bool progressions_different = false;
+
+			for (auto& e : es) {
+				if (!(insp.common.activate_layers == e.after.common.activate_layers)) {
+					progressions_different = true;
+				}
+			}
+
+			if (ImGui::Button("Add layer")) {
+				insp.common.activate_layers.push_back({});
+				result = "New entry in %x";
+
+				for (auto& e : es) {
+					auto& lc = e.after.common.activate_layers;
+					lc.push_back({});
+				}
+			}
+
+			auto cols = maybe_different_value_cols({}, progressions_different);
+
+			std::optional<std::size_t> removed_i;
+
+			for (auto& prog : insp.common.activate_layers) {
+				const auto idx = index_in(insp.common.activate_layers, prog);
+
+				auto id_but = typesafe_sprintf("-##Elem%x", idx);
+				const auto id_str = typesafe_sprintf("Element%x", idx);
+				auto this_scope = scoped_id(id_str.c_str());
+
+				if (ImGui::Button(id_but.c_str())) {
+					removed_i = idx;
+				}
+
+				ImGui::SameLine();
+
+				auto write_to_others = [&]() {
+					for (auto& e : es) {
+						auto& lc = e.after.common.activate_layers;
+
+						if (idx < lc.size()) {
+							lc[idx] = prog;
+						}
+					}
+				};
+
+				special_handler.allow_none = false;
+				auto label = typesafe_sprintf("Layer %x", idx);
+				if (edit_property(result, label, special_handler, prog)) write_to_others();
+				special_handler.allow_none = true;
+			}
+
+			if (removed_i) {
+				for (auto& e : es) {
+					auto& lc = e.after.common.activate_layers;
+
+					if (*removed_i < lc.size()) {
+						lc.erase(lc.begin() + *removed_i);
+					}
+				}
+
+				result = typesafe_sprintf("Removed entry %x from %x", *removed_i);
+			}
+		}
+
+		if (auto scope = augs::imgui::scoped_tree_node_ex("Deactivate")) {
+			bool progressions_different = false;
+
+			for (auto& e : es) {
+				if (!(insp.common.deactivate_layers == e.after.common.deactivate_layers)) {
+					progressions_different = true;
+				}
+			}
+
+			if (ImGui::Button("Add layer")) {
+				insp.common.deactivate_layers.push_back({});
+				result = "New entry in %x";
+
+				for (auto& e : es) {
+					auto& lc = e.after.common.deactivate_layers;
+					lc.push_back({});
+				}
+			}
+
+			auto cols = maybe_different_value_cols({}, progressions_different);
+
+			std::optional<std::size_t> removed_i;
+
+			for (auto& prog : insp.common.deactivate_layers) {
+				const auto idx = index_in(insp.common.deactivate_layers, prog);
+
+				auto id_but = typesafe_sprintf("-##Elem%x", idx);
+				const auto id_str = typesafe_sprintf("Element%x", idx);
+				auto this_scope = scoped_id(id_str.c_str());
+
+				if (ImGui::Button(id_but.c_str())) {
+					removed_i = idx;
+				}
+
+				ImGui::SameLine();
+
+				auto write_to_others = [&]() {
+					for (auto& e : es) {
+						auto& lc = e.after.common.deactivate_layers;
+
+						if (idx < lc.size()) {
+							lc[idx] = prog;
+						}
+					}
+				};
+
+				special_handler.allow_none = false;
+				auto label = typesafe_sprintf("Layer %x", idx);
+				if (edit_property(result, label, special_handler, prog)) write_to_others();
+				special_handler.allow_none = true;
+			}
+
+			if (removed_i) {
+				for (auto& e : es) {
+					auto& lc = e.after.common.deactivate_layers;
+
+					if (*removed_i < lc.size()) {
+						lc.erase(lc.begin() + *removed_i);
+					}
+				}
+
+				result = typesafe_sprintf("Removed entry %x from %x", *removed_i);
+			}
+		}
+	}
 
 	auto edit = [&]<typename I>(const I&) {
 		if constexpr(std::is_same_v<I, editor_quick_test_mode>) {

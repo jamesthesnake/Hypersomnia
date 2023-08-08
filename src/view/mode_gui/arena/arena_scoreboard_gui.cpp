@@ -94,7 +94,15 @@ void arena_scoreboard_gui::draw_gui(
 	const int num_participating_factions = 2;
 
 	auto estimated_window_height = [&]() {
-		const auto player_cells_h = cell_h * typed_mode.get_num_players();
+		auto num_players = uint32_t(0);
+
+		for (auto& p : typed_mode.get_players()) {
+			if (!p.second.should_hide_in_scoreboard()) {
+				++num_players;
+			}
+		}
+
+		const auto player_cells_h = cell_h * num_players;
 		const auto headline_cells_h = cell_h * 3 * num_participating_factions;
 
 		const auto num_spectators = typed_mode.num_players_in(faction_type::SPECTATOR);
@@ -284,6 +292,22 @@ void arena_scoreboard_gui::draw_gui(
 
 	const auto max_score = typed_mode.calc_max_faction_score();
 
+	auto get_nickname_str = [&](const auto& player_id, const auto& player_data) {
+		auto str = player_data.get_nickname();
+
+		if (in.player_metas) {
+			const auto progress = (*in.player_metas)[player_id.value].stats.download_progress;
+
+			if (progress != 255) {
+				const float percent = float(progress) / 255.0f;
+
+				str += typesafe_sprintf(" (downloading: %2f", 100 * percent) + "%)";
+			}
+		}
+
+		return str;
+	};
+
 	auto print_faction = [&](const faction_type faction, const bool on_top) {
 		(void)on_top;
 		auto& colors = in.config.faction_view.colors[faction];
@@ -296,6 +320,10 @@ void arena_scoreboard_gui::draw_gui(
 			const auto& id, 
 			const auto& player
 		) {
+			if (player.should_hide_in_scoreboard()) {
+				return;
+			}
+
 			sorted_players.emplace_back(player, id);
 		});
 
@@ -508,15 +536,17 @@ void arena_scoreboard_gui::draw_gui(
 				const auto ping = (*in.player_metas)[player_id.value].stats.ping;
 				auto ping_str = typesafe_sprintf("%x", ping);
 
-				if (ping == 0) {
-					ping_str = "Host";
-				}
+				if (ping >= 0) {
+					if (ping == 0) {
+						ping_str = "Host";
+					}
 
-				if (ping == 255) {
-					ping_str = ">254";
-				}
+					if (ping >= 255) {
+						ping_str = ">254";
+					}
 
-				col_text(ping_str);
+					col_text(ping_str);
+				}
 			}
 
 			next_col();
@@ -664,8 +694,7 @@ void arena_scoreboard_gui::draw_gui(
 			}
 
 			next_col();
-			col_text(player_data.get_chosen_name());
-			//print_col_text(*current_column, "(Kierownik imprezy)", white, true);
+			col_text(get_nickname_str(player_id, player_data));
 			next_col();
 
 			const auto& stats = player_data.stats;
@@ -746,7 +775,7 @@ void arena_scoreboard_gui::draw_gui(
 			pen.y += cell_h;
 
 			for (const auto& p : sorted_players) {
-				print_col_text(columns[3], p.first.get_chosen_name(), column_label_color);
+				print_col_text(columns[3], get_nickname_str(p.second, p.first), column_label_color);
 				pen.y += cell_h;
 			}
 		}
@@ -756,13 +785,13 @@ void arena_scoreboard_gui::draw_gui(
 
 	if (avatar_triangles.size() > 0) {
 		in.avatar_atlas->set_as_current(in.renderer);
-		in.renderer.call_triangles(avatar_triangles);
+		in.renderer.call_triangles(augs::dedicated_buffer::AVATARS);
 
 		augs::graphics::texture::set_current_to_previous(in.renderer);
 	}
 
 	if (color_indicator_triangles.size() > 0) {
-		in.renderer.call_triangles(color_indicator_triangles);
+		in.renderer.call_triangles(augs::dedicated_buffer::SCOREBOARD_COLOR_INDICATORS);
 	}
 }
 

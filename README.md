@@ -9,7 +9,7 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 <a href="https://discord.gg/YC49E4G"><img src="https://discordapp.com/api/guilds/284464744411430912/embed.png"></img></a>
 
-An online shooter with relentless dynamics.  
+Online shooter with relentless dynamics.  
 Challenge your friend to an intense duel, or gather two clans to fight a spectacular war.  
 
 Written in modern C++, without a game engine!
@@ -18,11 +18,19 @@ Forever free and open-source :heart:
 # Download the game
 
 <a href="https://hypersomnia.xyz/builds/latest/Hypersomnia-for-Windows.zip"> <img src="https://hypersomnia.xyz/images/windows_icon.svg" height=70 hspace=1> </a>
-<a href="https://hypersomnia.xyz/builds/latest/Hypersomnia-for-Linux.tar.gz"> <img src="https://hypersomnia.xyz/images/linux_icon.svg" height=70 hspace=1 vspace=20> </a>
+<a href="https://hypersomnia.xyz/builds/latest/Hypersomnia.AppImage"> <img src="https://hypersomnia.xyz/images/linux_icon.svg" height=70 hspace=1 vspace=20> </a>
 <a href="https://hypersomnia.xyz/builds/latest/Hypersomnia-for-MacOS.dmg"> <img src="https://upload.wikimedia.org/wikipedia/commons/2/22/MacOS_logo_%282017%29.svg" height=70 hspace=1 vspace=20> </a>
 <br undefined>
 
-Only 25 MB!
+<!---
+<img src="https://hypersomnia.xyz/images/windows_icon.svg" height=16 hspace=1></a> 
+-->
+
+Only 27 MB!
+
+<!---
+<img src="https://hypersomnia.xyz/images/linux_icon.svg" height=16 hspace=1></a> is built with ``-g``
+-->
 
 *Archives are [digitally signed.](https://github.com/TeamHypersomnia/Hypersomnia/blob/master/src/signing_keys.h) You can [verify signatures.](https://hypersomnia.xyz/builds/latest/)*
 
@@ -62,26 +70,22 @@ Only 25 MB!
 
 *Hypersomnia* is a competitive arena released as free software.
 
-It brings together:
+The game has been online and playable since 2017. It brings together:
+
 - the tactics of *Counter-Strike*, 
 - the dynamics of *Hotline Miami*,
 - the pixel art nostalgia of oldschool RPGs..
-- ..and the potential for limitless community content thanks to an in-game map editor!
+- ..and the potential for endless creativity thanks to an in-game map editor!
 
-The game is already playable and runs a **server instance 24/7.**
+*Hypersomnia* aims to be **the ultimate open-source 2D shooter** - a grand community project extensible without limit.
 
-Although currently intended for quick online matches,
-the project began with a single childhood dream:
-
-*To create an MMO shooter with a persistent universe.*
-
-In the future, the game might introduce elements of RPG with hardcore PvP mechanics.
-
-Set in a hypothetical afterlife reality, it shall provide joy through fierce fights, benevolent behaviors, fulfillment of elaborate social roles or sowing panic as a traitor to the altruists.
-
-Declare allegiance to one of the three factions whose apple of discord is a disparity between prevailing notions of moral excellence.
+Declare allegiance to one of the three factions whose apple of discord is a disparity between prevailing notions of moral excellence:
 
 **Metropolis. Atlantis. Resistance.**
+
+Will you take revenge for an unethical simulation of the inferior universe?
+Will you support the cruel experiments to win total control over metempsychosis? 
+Or will you join the underground civilization that awaits the end of war in this dangerous afterlife reality?
 
 # Features
 
@@ -316,10 +320,8 @@ Many believe that writing games without an engine is no more than *reinventing t
 
 **I hope this project serves as a great testament to the opposite.**
 
-If I never embarked on this journey, I would have never made some of the interesting discoveries detailed in [Tech highlights section.](#tech-highlights)
+Had I never embarked on this journey, I would have never made some of the interesting discoveries detailed in [Tech highlights section.](#tech-highlights)
 Video game internals are just so vast and interdisciplinary that they have limitless potential for creative breakthroughs, and it is a waste to never even entertain the idea that some widely used solutions can be replaced by something absolutely ingenious.
-
-It is not a bad thing that game engines exist. If you want to be competitive writing a game without one, then you are forced to come up with a design so unique that it would be hard or impossible to do it in a commercial engine. This alone helps developers arrive to exceptional game ideas.
 
 # Quick gameplay instructions
 
@@ -463,12 +465,8 @@ Current platforms are actively tested and supported:
 
 Arch Linux:
 
-- ``pkg-config``
-- ``libx11``
-- ``libxcb``
-- ``xcb-util-keysyms``
-- ``libsodium``
-- Might need more - you are on your own here (like very Arch user).
+- ``libc++ lld pkg-config libx11 libxcb xcb-util-keysyms libsodium``
+- Might need more - [let us know](https://github.com/TeamHypersomnia/Hypersomnia/issues) if this list is missing something.
 
 Ubuntu:
 
@@ -551,7 +549,7 @@ You might want to follow some additional configuration to make the experience be
 #### Opening and revealing files
 
 The *Hypersomnia* editor can reveal files in explorer.
-The game may also want to open files in other contexts, e.g. for choosing the avatar.
+Also, the game may prompt you to select a file, e.g. to choose the avatar.
 On Windows, this is accomplished through an ``IFileDialog``.  
 Needless to say, such a class does not exist on Linux.  
 *Hypersomnia* provides shell scripts for common file managers in ``hypersomnia/detail/unix/managers``.  

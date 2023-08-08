@@ -23,7 +23,11 @@
 #include "augs/string/parse_url.h"
 #include "application/detail_file_paths.h"
 #include "application/setups/server/webhooks.h"
+#include "application/masterserver/server_list_entry_json.h"
+#include "3rdparty/rapidjson/include/rapidjson/prettywriter.h"
+#include "augs/readwrite/json_readwrite.h"
 
+std::string to_lowercase(std::string s);
 std::string ToString(const netcode_address_t&);
 
 #if PLATFORM_UNIX
@@ -48,15 +52,15 @@ void MSR_LOG(Args&&... args) {
 #endif
 
 struct masterserver_client_meta {
-	double appeared_when;
+	double time_hosted;
 
 	masterserver_client_meta() {
-		appeared_when = augs::date_time::secs_since_epoch();
+		time_hosted = augs::date_time::secs_since_epoch();
 	}
 };
 
 struct masterserver_client {
-	double time_of_last_heartbeat;
+	double time_last_heartbeat;
 
 	masterserver_client_meta meta;
 	server_heartbeat last_heartbeat;
@@ -124,9 +128,56 @@ void perform_masterserver(const config_lua_table& cfg) try {
 		return nullptr;
 	};
 
+	auto banlist_to_set = [](const auto& path) {
+		std::pair<std::unordered_set<std::string>, std::unordered_set<std::string>> out;
+
+		try {
+			auto content = augs::file_to_string(path);
+			auto s = std::stringstream(content);
+
+			for (std::string line; std::getline(s, line); ) {
+				auto space = line.find(' ');
+				out.first.insert(line.substr(0, space));
+
+				if (space != std::string::npos) {
+					auto server_name = line.substr(space + 1);
+					out.second.insert(::to_lowercase(server_name));
+				}
+			}
+		}
+		catch (...) {
+
+		}
+
+		return out;
+	};
+
+	auto banlist_notifications 	= banlist_to_set(augs::path_type(USER_FILES_DIR) / "masterserver_banlist_notifications.txt");
+	auto banlist_servers 		= banlist_to_set(augs::path_type(USER_FILES_DIR) / "masterserver_banlist_servers.txt");
+
+	auto is_banned_notifications = [&](netcode_address_t t) {
+		t.port = 0;
+		return found_in(banlist_notifications.first, ::ToString(t));
+	};
+
+	auto is_banned_server = [&](netcode_address_t t) {
+		t.port = 0;
+		return found_in(banlist_servers.first, ::ToString(t));
+	};
+
+	auto is_banned_notifications_name = [&](const std::string& t) {
+		return found_in(banlist_notifications.second, ::to_lowercase(t));
+	};
+
+	auto is_banned_server_name = [&](const std::string& t) {
+		return found_in(banlist_servers.second, ::to_lowercase(t));
+	};
+
 	std::unordered_map<netcode_address_t, masterserver_client> server_list;
 
 	std::vector<std::byte> serialized_list;
+	std::string serialized_list_json = "[]";
+
 	std::shared_mutex serialized_list_mutex;
 
 	httplib::Server http;
@@ -146,9 +197,58 @@ void perform_masterserver(const config_lua_table& cfg) try {
 			const auto address = server.first;
 
 			augs::write_bytes(ss, address);
-			augs::write_bytes(ss, server.second.meta.appeared_when);
+			augs::write_bytes(ss, server.second.meta.time_hosted);
 			augs::write_bytes(ss, server.second.last_heartbeat);
 		}
+
+		rapidjson::StringBuffer s;
+		rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(s);
+
+		writer.StartArray();
+
+		for (auto& server : server_list) {
+			const auto& data = server.second.last_heartbeat;
+
+			server_list_entry_json next;
+
+			next.server_version = data.server_version;
+
+			next.name = data.server_name;
+			next.ip = ::ToString(server.first);
+
+			next.time_hosted = server.second.meta.time_hosted;
+			next.time_last_heartbeat = server.second.time_last_heartbeat;
+			next.arena = data.current_arena;
+			next.game_mode = data.game_mode;
+
+			next.num_playing = data.num_fighting;
+			next.num_spectating = data.get_num_spectators();
+
+			next.slots = data.max_online;
+
+			next.nat = data.nat.type;
+
+			if (data.internal_network_address.has_value()) {
+				next.internal_network_address = ::ToString(*data.internal_network_address);
+			}
+
+			if (data.is_editor_playtesting_server) {
+				next.is_editor_playtesting_server = data.is_editor_playtesting_server;
+			}
+
+			next.score_resistance = data.score_resistance;
+			next.score_metropolis = data.score_metropolis;
+
+			next.players_resistance = data.players_resistance;
+			next.players_metropolis = data.players_metropolis;
+			next.players_spectating = data.players_spectating;
+
+			augs::write_json(writer, next);
+		}
+
+		writer.EndArray();
+
+		serialized_list_json = s.GetString();
 	};
 
 	auto dump_server_list_to_file = [&]() {
@@ -170,16 +270,16 @@ void perform_masterserver(const config_lua_table& cfg) try {
 
 			LOG("%x found.\nLoading the server list from file.", masterserver_dump_path);
 
-			const auto current_time = yojimbo_time();
+			const auto current_time = augs::date_time::secs_since_epoch();
 
 			while (source.peek() != EOF) {
 				const auto address = augs::read_bytes<netcode_address_t>(source);
 
 				masterserver_client entry;
-				augs::read_bytes(source, entry.meta.appeared_when);
+				augs::read_bytes(source, entry.meta.time_hosted);
 				augs::read_bytes(source, entry.last_heartbeat);
 
-				entry.time_of_last_heartbeat = current_time;
+				entry.time_last_heartbeat = current_time;
 
 				server_list.try_emplace(address, std::move(entry));
 			}
@@ -206,6 +306,12 @@ void perform_masterserver(const config_lua_table& cfg) try {
 		};
 	};
 
+	auto make_json_list_streamer_lambda = [&]() {
+		return [data=serialized_list_json](uint64_t offset, uint64_t length, DataSink& sink) {
+			return sink.write(reinterpret_cast<const char*>(&data[offset]), length);
+		};
+	};
+
 	auto remove_from_list = [&](const auto& by_external_addr) {
 		server_list.erase(by_external_addr);
 		reserialize_list();
@@ -222,6 +328,20 @@ void perform_masterserver(const config_lua_table& cfg) try {
 					serialized_list.size(),
 					"application/octet-stream",
 					make_list_streamer_lambda()
+				);
+			}
+		});
+
+		http.Get("/server_list_json", [&](const Request&, Response& res) {
+			std::shared_lock<std::shared_mutex> lock(serialized_list_mutex);
+
+			if (serialized_list_json.size() > 0) {
+				MSR_LOG("JSON list request arrived. Sending list of size: %x", serialized_list_json.size());
+
+				res.set_content_provider(
+					serialized_list_json.size(),
+					"application/json",
+					make_json_list_streamer_lambda()
 				);
 			}
 		});
@@ -263,6 +383,14 @@ void perform_masterserver(const config_lua_table& cfg) try {
 	auto push_new_server_webhook = [&](const netcode_address_t& from, const server_heartbeat& data) {
 		const auto ip_str = ::ToString(from);
 
+		if (is_banned_notifications(from)) {
+			return;
+		}
+
+		if (is_banned_notifications_name(data.server_name)) {
+			return;
+		}
+
 		const auto passed = since_launch.get<std::chrono::seconds>();
 		const auto mute_for_secs = settings.suppress_community_server_webhooks_after_launch_for_secs;
 
@@ -271,7 +399,7 @@ void perform_masterserver(const config_lua_table& cfg) try {
 			return;
 		}
 
-		if (auto discord_webhook_url = parsed_url(cfg.private_server.discord_webhook_url); discord_webhook_url.valid()) {
+		if (auto discord_webhook_url = parsed_url(cfg.server_private.discord_webhook_url); discord_webhook_url.valid()) {
 			MSR_LOG("Posting a discord webhook job");
 
 			push_webhook_job(
@@ -309,15 +437,15 @@ void perform_masterserver(const config_lua_table& cfg) try {
 			);
 		}
 		else {
-			if (cfg.private_server.discord_webhook_url.size() > 0) {
+			if (cfg.server_private.discord_webhook_url.size() > 0) {
 				MSR_LOG("Discord webhook url was invalid.");
 			}
 		}
 
-		if (auto telegram_webhook_url = parsed_url(cfg.private_server.telegram_webhook_url); telegram_webhook_url.valid()) {
+		if (auto telegram_webhook_url = parsed_url(cfg.server_private.telegram_webhook_url); telegram_webhook_url.valid()) {
 			MSR_LOG("Posting a telegram webhook job");
 
-			auto telegram_channel_id = cfg.private_server.telegram_channel_id;
+			auto telegram_channel_id = cfg.server_private.telegram_channel_id;
 
 			push_webhook_job(
 				[ip_str, data, telegram_webhook_url, telegram_channel_id]() -> std::string {
@@ -350,7 +478,7 @@ void perform_masterserver(const config_lua_table& cfg) try {
 			);
 		}
 		else {
-			if (cfg.private_server.telegram_webhook_url.size() > 0) {
+			if (cfg.server_private.telegram_webhook_url.size() > 0) {
 				MSR_LOG("Discord webhook url was invalid.");
 			}
 		}
@@ -374,7 +502,7 @@ void perform_masterserver(const config_lua_table& cfg) try {
 		}
 #endif
 
-		const auto current_time = yojimbo_time();
+		const auto current_time = augs::date_time::secs_since_epoch();
 
 		finalize_webhook_jobs();
 
@@ -383,6 +511,10 @@ void perform_masterserver(const config_lua_table& cfg) try {
 			const auto packet_bytes = netcode_socket_receive_packet(&socket, &from, packet_buffer, NETCODE_MAX_PACKET_BYTES);
 
 			if (packet_bytes < 1) {
+				return;
+			}
+
+			if (is_banned_server(from)) {
 				return;
 			}
 
@@ -419,6 +551,10 @@ void perform_masterserver(const config_lua_table& cfg) try {
 						}
 					}
 					else if constexpr(std::is_same_v<R, masterserver_in::heartbeat>) {
+						if (is_banned_server_name(typed_request.server_name)) {
+							return;
+						}
+
 						if (typed_request.is_valid()) {
 							auto it = server_list.try_emplace(from);
 
@@ -427,7 +563,7 @@ void perform_masterserver(const config_lua_table& cfg) try {
 
 							const auto heartbeat_before = server_entry.last_heartbeat;
 							server_entry.last_heartbeat = typed_request;
-							server_entry.time_of_last_heartbeat = current_time;
+							server_entry.time_last_heartbeat = current_time;
 
 							const bool heartbeats_mismatch = heartbeat_before != server_entry.last_heartbeat;
 
@@ -555,7 +691,7 @@ void perform_masterserver(const config_lua_table& cfg) try {
 		};
 
 		auto erase_if_dead = [&](auto& server_entry) {
-			const bool timed_out = current_time - server_entry.second.time_of_last_heartbeat >= timeout_secs;
+			const bool timed_out = current_time - server_entry.second.time_last_heartbeat >= timeout_secs;
 
 			if (timed_out) {
 				LOG("The server at %x (%x) has timed out.", ::ToString(server_entry.first), server_entry.second.last_heartbeat.server_name);

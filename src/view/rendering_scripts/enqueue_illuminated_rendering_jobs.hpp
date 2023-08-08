@@ -23,6 +23,7 @@ void enqueue_illuminated_rendering_jobs(
 	const auto& settings = in.drawing;
 	const auto& damage_indication_settings = in.damage_indication;
 	const auto& queried_cone = in.queried_cone;
+	const auto& actual_cone = in.camera.cone;
 	const auto& visible = in.all_visible;
 	const auto& interp = av.template get<interpolation_system>();
 	const auto& damage_indication = av.template get<damage_indication_system>();
@@ -324,12 +325,17 @@ void enqueue_illuminated_rendering_jobs(
 		}
 
 		{
-			auto job = [h = make_helper(D::FOREGROUND_NEONS)]() {
-				h.draw_neons<
+			auto job = [h1 = make_helper(D::UNDER_FOREGROUND_NEONS), h2 = make_helper(D::FOREGROUND_NEONS)]() {
+				h1.draw_neons<
 					render_layer::PLANTED_ITEMS,
+					render_layer::OBSTACLES_UNDER_MISSILES,
+					render_layer::MISSILES,
 					render_layer::SOLID_OBSTACLES,
-					render_layer::REMNANTS,
+					render_layer::REMNANTS
 					/* Sentiences would come here if not for the fact that they have special neon logic */
+				>();
+
+				h2.draw_neons<
 					render_layer::FOREGROUND,
 					render_layer::FOREGROUND_GLOWS
 				>();
@@ -339,13 +345,17 @@ void enqueue_illuminated_rendering_jobs(
 		}
 
 		{
-			auto job = [h1 = make_helper(D::GROUND_NEONS), h2 = make_helper(D::GROUND_NEON_OCCLUDERS)]() {
+			auto job = [h1 = make_helper(D::GROUND_NEONS), h2 = make_helper(D::GROUND_NEON_OCCLUDERS), h3 = make_helper(D::FOREGROUND_NEON_OCCLUDERS)]() {
 				h1.draw_neons<
 					render_layer::GROUND
 				>();
 
 				h2.draw<
 					special_render_function::COVER_GROUND_NEONS
+				>();
+
+				h3.draw<
+					special_render_function::COVER_GROUND_NEONS_FOREGROUND
 				>();
 			};
 
@@ -476,7 +486,9 @@ void enqueue_illuminated_rendering_jobs(
 			auto job = [h = make_helper(D::GROUND)]() {
 				h.draw<
 					render_layer::GROUND,
-					render_layer::PLANTED_ITEMS
+					render_layer::PLANTED_ITEMS,
+					render_layer::OBSTACLES_UNDER_MISSILES,
+					render_layer::MISSILES
 				>();
 			};
 
@@ -555,7 +567,7 @@ void enqueue_illuminated_rendering_jobs(
 		}
 	};
 
-	auto special_effects_job = [&cosm, &exploding_rings, &dedicated, get_drawer_for, &thunders, queried_cone, get_line_drawer_for]() {
+	auto special_effects_job = [&cosm, &exploding_rings, &dedicated, get_drawer_for, &thunders, queried_cone, actual_cone, get_line_drawer_for]() {
 		{
 			thunders.draw_thunders(
 				get_line_drawer_for(D::THUNDERS),
@@ -567,7 +579,8 @@ void enqueue_illuminated_rendering_jobs(
 			exploding_rings.draw_rings(
 				get_drawer_for(D::EXPLODING_RINGS),
 				dedicated[D::EXPLODING_RINGS].specials,
-				queried_cone
+				queried_cone,
+				actual_cone
 			);
 		}
 
@@ -576,7 +589,8 @@ void enqueue_illuminated_rendering_jobs(
 				cosm,
 				get_drawer_for(D::EXPLODING_RINGS),
 				dedicated[D::EXPLODING_RINGS].specials,
-				queried_cone
+				queried_cone,
+				actual_cone
 			);
 		}
 	};

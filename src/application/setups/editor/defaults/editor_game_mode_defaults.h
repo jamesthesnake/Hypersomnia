@@ -32,15 +32,12 @@ inline void setup_game_mode_defaults(
 	e.gun_game.progression = {
 		o[test_shootable_weapons::ELON],
 		o[test_shootable_weapons::BULLDUP2000],
-		o[test_shootable_weapons::LEWS],
 
 		o[test_shootable_weapons::DATUM],
 		o[test_shootable_weapons::BAKA47],
 		o[test_shootable_weapons::SZTURM],
 		o[test_shootable_weapons::BILMER2000],
 		o[test_shootable_weapons::GALILEA],
-
-		o[test_shootable_weapons::AMPLIFIER_ARM],
 
 		o[test_shootable_weapons::PRO90],
 		o[test_shootable_weapons::CYBERSPRAY],
@@ -49,6 +46,9 @@ inline void setup_game_mode_defaults(
 		o[test_shootable_weapons::WARX],
 		o[test_shootable_weapons::GRADOBICIE],
 
+		o[test_shootable_weapons::AWKA],
+		o[test_shootable_weapons::HUNTER],
+
 		o[test_shootable_weapons::DEAGLE],
 		o[test_shootable_weapons::COVERT],
 		o[test_shootable_weapons::AO44],
@@ -56,10 +56,7 @@ inline void setup_game_mode_defaults(
 		o[test_shootable_weapons::BULWARK],
 
 		o[test_shootable_weapons::KEK9],
-		o[test_shootable_weapons::SN69],
-
-		o[test_shootable_weapons::AWKA],
-		o[test_shootable_weapons::HUNTER]
+		o[test_shootable_weapons::SN69]
 	};
 
 	editor_requested_equipment basic_eq;

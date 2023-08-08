@@ -14,6 +14,40 @@ namespace sanitization {
 }
 
 namespace net_messages {
+	template <class Stream, class T>
+	bool unsafe_serialize(Stream& s, T& c) {
+		std::vector<std::byte> bytes;
+
+		if (Stream::IsWriting) {
+			bytes = augs::to_bytes(c);
+		}
+
+		auto length = static_cast<int>(bytes.size());
+
+		/* 
+			To properly get a bound on its maximum size,
+			this type needs to be trivially copyable.
+		*/
+
+		static_assert(std::is_trivially_copyable_v<T>);
+		serialize_int(s, length, 0, sizeof(T));
+
+		if (Stream::IsReading) {
+			bytes.resize(length);
+		}
+
+		serialize_bytes(s, (uint8_t*)bytes.data(), length);
+
+		try {
+			augs::from_bytes(bytes, c);
+		}
+		catch (...) {
+			return false;
+		}
+
+		return true;
+	}
+
 	template <class Stream, class V>
 	bool serialize_trivial_as_bytes(Stream& s, V& v) {
 		static_assert(augs::is_byte_readwrite_appropriate_v<augs::memory_stream, V>);
@@ -82,6 +116,37 @@ namespace net_messages {
 		return true;
 	}
 
+	template <class Stream, uint32_t Max>
+	bool serialize_fixed_size_vector_uint16_t(Stream& s, augs::constant_size_vector<uint16_t, Max>& e) {
+		auto length = static_cast<int>(e.size());
+
+		serialize_int(s, length, 0, Max);
+
+		if (Stream::IsReading) {
+			e.resize(length);
+		}
+
+		serialize_bytes(s, (uint8_t*)e.data(), length * sizeof(uint16_t));
+		return true;
+	}
+
+	template <class Stream>
+	bool serialize(Stream& s, ::file_download_payload& c) {
+		serialize_int(s, c.num_file_bytes, 1, max_direct_download_file_size_v);
+
+		return true;
+	}
+
+	template <class Stream>
+	bool serialize(Stream& s, ::file_chunks_request_payload& c) {
+		return serialize_fixed_size_vector_uint16_t(s, c.requests);
+	}
+
+	template <class Stream>
+	bool serialize(Stream& s, ::file_download_link_payload& c) {
+		return serialize_fixed_size_str(s, c.file_address);
+	}
+
 	template <class Stream>
 	bool serialize(Stream& s, ::client_requested_chat& c) {
 		if (!serialize_enum(s, c.target)) {
@@ -104,9 +169,11 @@ namespace net_messages {
 			return false;
 		}
 
-		serialize_bool(s, c.recipient_shall_kindly_leave);
-
 		if (!serialize_enum(s, c.target)) {
+			return false;
+		}
+
+		if (!serialize_enum(s, c.recipient_effect)) {
 			return false;
 		}
 
@@ -117,7 +184,7 @@ namespace net_messages {
 
 	template <class Stream>
 	bool serialize(Stream& s, ::net_statistics_update& c) {
-		return serialize_vector_uint8_t(s, c.ping_values, 0, max_mode_players_v);
+		return unsafe_serialize(s, c);
 	}
 
 	template <class Stream>
@@ -125,34 +192,18 @@ namespace net_messages {
 		return serialize_enum(s, c);
 	}
 
-	template <class Stream, class T>
-	bool unsafe_serialize(Stream& s, T& c) {
-		std::vector<std::byte> bytes;
-
-		if (Stream::IsWriting) {
-			bytes = augs::to_bytes(c);
+	template <class Stream>
+	bool serialize(Stream& s, server_vars& c) {
+		if (!unsafe_serialize(s, c)) {
+			return false;
 		}
 
-		auto length = static_cast<int>(bytes.size());
+		return sanitization::arena_name_safe(c.arena);
+	}
 
-		/* 
-			To properly get a bound on its maximum size,
-			this type needs to be trivially copyable.
-		*/
-
-		static_assert(std::is_trivially_copyable_v<T>);
-		serialize_int(s, length, 0, sizeof(T));
-
-		if (Stream::IsReading) {
-			bytes.resize(length);
-		}
-
-		serialize_bytes(s, (uint8_t*)bytes.data(), length);
-
-		try {
-			augs::from_bytes(bytes, c);
-		}
-		catch (...) {
+	template <class Stream>
+	bool serialize(Stream& s, server_runtime_info& c) {
+		if (!unsafe_serialize(s, c)) {
 			return false;
 		}
 
@@ -160,12 +211,7 @@ namespace net_messages {
 	}
 
 	template <class Stream>
-	bool serialize(Stream& s, server_vars& c) {
-		return unsafe_serialize(s, c);
-	}
-
-	template <class Stream>
-	bool serialize(Stream& s, server_solvable_vars& c) {
+	bool serialize(Stream& s, server_public_vars& c) {
 		if (!unsafe_serialize(s, c)) {
 			return false;
 		}
@@ -316,7 +362,13 @@ namespace net_messages {
 
 	template <typename Stream>
 	bool serialize(Stream& stream, ::request_arena_file_download& payload) {
-		return serialize_fixed_byte_array(stream, payload.requested_file_hash);
+		if (!serialize_fixed_byte_array(stream, payload.requested_file_hash)) {
+			return false;
+		}
+
+		serialize_int(stream, payload.num_chunks_to_presend, 0, std::numeric_limits<uint16_t>::max());
+
+		return true;
 	}
 
 	template <typename Stream>

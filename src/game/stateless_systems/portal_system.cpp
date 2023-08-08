@@ -9,6 +9,8 @@
 #include "game/detail/entity_handle_mixins/for_each_slot_and_item.hpp"
 #include "game/messages/pure_color_highlight_message.h"
 #include "game/detail/melee/like_melee.h"
+#include "game/messages/damage_message.h"
+#include "game/messages/game_notification.h"
 
 auto calc_unit_progress_per_step(const augs::delta& dt, const real32 time_ms) {
 	const auto seconds_to_complete = time_ms / 1000;
@@ -217,6 +219,7 @@ void portal_system::finalize_portal_exit(const logic_step step, const entity_han
 		const auto& portal = portal_handle.template get<components::portal>();
 
 		const auto portal_exit = cosm[portal.portal_exit];
+		const bool trampoline_like = portal_handle == portal_exit;
 
 		const auto contacted_entity_transform = typed_contacted_entity.get_logic_transform();
 		const auto portal_entry_transform = portal_handle.get_logic_transform();
@@ -229,7 +232,11 @@ void portal_system::finalize_portal_exit(const logic_step step, const entity_han
 						contacted_entity_transform.rotation
 					};
 
-					const auto radius = portal_exit.get_logical_size().smaller_side() / 2;
+					const auto& portal_exit_marker = portal_exit.template get<components::marker>();
+					const auto shape = portal_exit_marker.shape;
+					const auto logical_size = portal_exit.get_logical_size();
+
+					const auto radius = logical_size.smaller_side() / 2;
 
 					rigid_body.restore_velocities();
 
@@ -262,8 +269,22 @@ void portal_system::finalize_portal_exit(const logic_step step, const entity_han
 
 					switch (portal_exit_portal->exit_position) {
 						case portal_exit_position::PORTAL_CENTER_PLUS_ENTERING_OFFSET:
-							final_transform.pos += (contacted_entity_transform.pos - portal_entry_transform.pos).trim_length(radius);
+						{
+							auto dir = contacted_entity_transform.pos - portal_entry_transform.pos;
+
+							if (!trampoline_like) {
+								if (shape == marker_shape_type::CIRCLE) {
+									dir = dir.trim_length(radius);
+								}
+								else {
+									dir = dir.clamp(logical_size / 2);
+								}
+							}
+
+							final_transform.pos += dir;
+
 							break;
+						}
 						case portal_exit_position::PORTAL_BOUNDARY:
 							final_transform.pos += portal_exit_direction * radius;
 							break;
@@ -316,7 +337,32 @@ void portal_system::finalize_portal_exit(const logic_step step, const entity_han
 					typed_contacted_entity.set_logic_transform(final_transform);
 					::snap_interpolated_to(typed_contacted_entity, final_transform);
 
+					{
+						messages::game_notification notification;
+
+						notification.payload = messages::teleportation { 
+							typed_contacted_entity.get_id(),
+							portal_exit.get_id() 
+						};
+
+						step.post_message(notification);
+					}
+
 					play_exit_effects(step, typed_contacted_entity, *portal_exit_portal);
+
+					if (portal_exit_portal->hazard.is_enabled) {
+						const auto& hazard = portal_exit_portal->hazard.value;
+
+						messages::damage_message msg;
+						msg.subject = typed_contacted_entity;
+						msg.damage.base = hazard.damage;
+						msg.origin.cause = damage_cause(portal_exit);
+						msg.origin.sender.set(typed_contacted_entity);
+						msg.impact_velocity = considered_velocity;
+						msg.point_of_impact = contacted_entity_transform.pos;
+
+						step.post_message(msg);
+					}
 
 					special.teleport_progress = 0.0f;
 					special.teleport_progress_falloff_speed = 0.0f;
@@ -377,6 +423,14 @@ void portal_system::advance_portal_logic(const logic_step step) {
 				if (portal.ignore_airborne_characters) {
 					if (auto movement = typed_contacted_entity.template find<components::movement>()) {
 						if (movement->const_inertia_ms > 0.0f || movement->linear_inertia_ms > 0.0f || movement->portal_inertia_ms > 0.0f) {
+							return false;
+						}
+					}
+				}
+
+				if (portal.ignore_walking_characters) {
+					if (auto movement = typed_contacted_entity.template find<components::movement>()) {
+						if (movement->was_walk_effective) {
 							return false;
 						}
 					}
@@ -594,6 +648,20 @@ void portal_system::advance_portal_logic(const logic_step step) {
 
 					if (contacted_entity.dead()) {
 						continue;
+					}
+
+					const bool filters_factions = 
+						!portal.reacts_to_factions.metropolis
+						|| !portal.reacts_to_factions.resistance
+						|| !portal.reacts_to_factions.atlantis
+					;
+
+					if (filters_factions)  {
+						if (const auto capability = contacted_entity.get_owning_transfer_capability()) {
+							if (!portal.reacts_to_factions[capability.get_official_faction()]) {
+								continue;
+							}
+						}
 					}
 
 					if (ce->other->m_last_teleport_progress_timestamp == now) {

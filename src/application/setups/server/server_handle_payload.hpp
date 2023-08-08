@@ -6,6 +6,7 @@ message_handler_result server_setup::handle_payload(
 	F&& read_payload
 ) {
 	constexpr auto abort_v = message_handler_result::ABORT_AND_DISCONNECT;
+	constexpr auto continue_v = message_handler_result::CONTINUE;
 	constexpr bool is_easy_v = payload_easily_movable_v<T>;
 
 	std::conditional_t<is_easy_v, T, std::monostate> payload;
@@ -21,6 +22,11 @@ message_handler_result server_setup::handle_payload(
 	namespace N = net_messages;
 
 	auto& c = clients[client_id];
+
+	if (c.when_kicked.has_value()) {
+		return continue_v;
+	}
+
 	ensure(c.is_set());
 
 	if constexpr (std::is_same_v<T, requested_client_settings>) {
@@ -96,7 +102,7 @@ message_handler_result server_setup::handle_payload(
 		if (level >= rcon_level_type::BASIC) {
 			const auto result = std::visit(
 				[&](const auto& typed_payload) {
-					return handle_rcon_payload(typed_payload);
+					return handle_rcon_payload(level, typed_payload);
 				},
 				payload
 			);
@@ -155,18 +161,34 @@ message_handler_result server_setup::handle_payload(
 		}
 
 		c.pending_entropies.emplace_back(std::move(payload));
-		//LOG("Received %x th command from client. ", c.pending_entropies.size());
+		// LOG("Received %xth command from client. ", c.pending_entropies.size());
 	}
 	else if constexpr (std::is_same_v<T, special_client_request>) {
+		auto wait_download = [&](const auto type) {
+			set_client_is_downloading_files(client_id, c, type);
+
+			c.reset_solvable_stream();
+			c.last_valid_payload_time = server_time;
+			c.last_keyboard_activity_time = server_time;
+		};
+
 		switch (payload) {
 			case special_client_request::RESET_AFK_TIMER:
 				c.last_keyboard_activity_time = server_time;
 				break;
 
+			case special_client_request::WAIT_IM_DOWNLOADING_ARENA_EXTERNALLY:
+				wait_download(downloading_type::EXTERNALLY);
+				break;
+
+			case special_client_request::WAIT_IM_DOWNLOADING_ARENA_DIRECTLY:
+				wait_download(downloading_type::DIRECTLY);
+				break;
+
 			case special_client_request::RESYNC_ARENA_AFTER_FILES_DOWNLOADED:
 				LOG("Client is asking for a resync after download.");
 				
-				if (!c.is_downloading_files) {
+				if (c.downloading_status == downloading_type::NONE) {
 					LOG("Client notified about downloads completion twice.");
 					return abort_v;
 				}
@@ -177,13 +199,24 @@ message_handler_result server_setup::handle_payload(
 
 					if (const auto session_id = find_session_id(client_id)) {
 						message.author = *session_id;
+					}
 
+					{
 						const auto except = client_id;
 						broadcast(message, except);
 					}
+
+					message.recipient_effect = recipient_effect_type::RESUME_RECEIVING_SOLVABLES;
+
+					server->send_payload(
+						client_id,
+						game_channel_type::RELIABLE_MESSAGES,
+						message
+					);
 				}
 
-				c.is_downloading_files = false;
+				c.downloading_status = downloading_type::NONE;
+				c.now_downloading_file = std::nullopt;
 
 				/* Prevent kick after the inactivity period */
 
@@ -192,9 +225,14 @@ message_handler_result server_setup::handle_payload(
 
 				/* 
 					Resync entire solvable as if the client has just connected. 
+
+					The client's solvable stream is guaranteed to be clean right now (unless they're malicious but it's their loss)
+
+					It's because client makes sure to start sending entropies
+					ONLY AFTER RECEIVING the first full state snapshot,
+					as if they have just connected for the first time.
 				*/
 
-				c.reset_solvable_stream();
 				send_complete_solvable_state_to(client_id);
 				reinference_necessary = true;
 
@@ -255,7 +293,7 @@ message_handler_result server_setup::handle_payload(
 								auto broadcast_avatar = [this, session_id_of_avatar, &client_with_updated_avatar = c](const auto recipient_client_id, auto&) {
 									server->send_payload(
 										recipient_client_id,
-										game_channel_type::SERVER_SOLVABLE_AND_STEPS,
+										game_channel_type::RELIABLE_MESSAGES,
 
 										*session_id_of_avatar,
 										client_with_updated_avatar.meta.avatar
@@ -281,68 +319,80 @@ message_handler_result server_setup::handle_payload(
 		}
 	}
 	else if constexpr (std::is_same_v<T, ::download_progress_message>) {
+		c.meta.stats.download_progress = payload.progress;
+		LOG("Client %x download progress: %x", client_id, float(payload.progress) / 255);
+	}
+	else if constexpr (std::is_same_v<T, ::file_chunks_request_payload>) {
+		if (!c.now_downloading_file.has_value()) {
+			return continue_v;
+		}
 
+		const auto found_file = mapped_or_nullptr(arena_files_database, *c.now_downloading_file);
+
+		if (found_file == nullptr) {
+			return continue_v;
+		}
+
+		for (const auto chunk_index : payload.requests) {
+			if (c.direct_file_chunks_left == 0) {
+				break;
+			}
+
+			--c.direct_file_chunks_left;
+
+			send_file_chunk(client_id, *found_file, chunk_index);
+		}
 	}
 	else if constexpr (std::is_same_v<T, ::request_arena_file_download>) {
-		if (!vars.allow_arena_file_downloads) {
+		if (!vars.allow_direct_arena_file_downloads) {
 			kick(client_id, "This server disabled downloading arenas.");
-			return abort_v;
+			return continue_v;
 		}
 
 		auto kick_file_not_found = [&]() {
 			kick(client_id, "Requested file was not found on the server.");
-			return abort_v;
 		};
 
-		/*
-		   	TODO: Check if the previous file transfer is complete, for security.
-			Should probably check if the channel is empty, and if it's not, just kick.
-		*/
+		if (const auto found_file = mapped_or_nullptr(arena_files_database, payload.requested_file_hash)) {
+			auto& file_bytes = found_file->cached_file;
 
-		if (const auto found_file_path = mapped_or_nullptr(arena_files_database, payload.requested_file_hash)) {
-			file_download_payload sent_file_payload;
-
-			try {
-				if (found_file_path->extension() == ".json") {
-					const auto str = augs::file_to_string_crlf_to_lf(*found_file_path);
-
-					sent_file_payload.file_bytes.assign(
-						reinterpret_cast<const std::byte*>(str.data()),
-						reinterpret_cast<const std::byte*>(str.data() + str.size())
-					);
+			if (file_bytes.empty()) {
+				try {
+					file_bytes = augs::file_to_bytes(found_file->path);
+					opened_arena_files.emplace(payload.requested_file_hash);
 				}
-				else {
-					sent_file_payload.file_bytes = augs::file_to_bytes(*found_file_path);
-				}
-			}
-			catch (...) {
-				return kick_file_not_found();
-			}
-
-			if (!c.is_downloading_files) {
-				server_broadcasted_chat message;
-				message.target = chat_target_type::DOWNLOADING_FILES;
-
-				if (const auto session_id = find_session_id(client_id)) {
-					message.author = *session_id;
-
-					const auto except = client_id;
-					broadcast(message, except);
+				catch (...) {
+					kick_file_not_found();
+					return continue_v;
 				}
 			}
 
-			c.is_downloading_files = true;
+			set_client_is_downloading_files(client_id, c, downloading_type::DIRECTLY);
 			c.when_last_sent_file_packet = get_current_time();
+			c.now_downloading_file = payload.requested_file_hash;
+			c.direct_file_chunks_left = 0;
+
+			file_download_payload sent_file_payload;
+			sent_file_payload.num_file_bytes = file_bytes.size();
 
 			server->send_payload(
 				client_id, 
-				game_channel_type::SERVER_SOLVABLE_AND_STEPS, 
+				game_channel_type::RELIABLE_MESSAGES, 
 
 				sent_file_payload
 			);
+
+			const auto max_to_presend = uint16_t(calc_num_chunks_per_tick_per_downloader() * 2);
+			const auto num_to_presend = std::min(max_to_presend, payload.num_chunks_to_presend);
+
+			for (file_chunk_index_type chunk_index = 0; chunk_index < num_to_presend; ++chunk_index) {
+				if (!send_file_chunk(client_id, *found_file, chunk_index)) {
+					break;
+				}
+			}
 		}
 		else {
-			return kick_file_not_found();
+			kick_file_not_found();
 		}
 	}
 	else {
@@ -350,6 +400,6 @@ message_handler_result server_setup::handle_payload(
 	}
 
 	c.last_valid_payload_time = server_time;
-	return message_handler_result::CONTINUE;
+	return continue_v;
 }
 

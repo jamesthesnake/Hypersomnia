@@ -65,8 +65,8 @@ namespace net_messages {
 		return unsafe_write_message(*this, input);
 	}
 
-	inline bool new_server_solvable_vars::read_payload(
-		server_solvable_vars& output
+	inline bool new_server_public_vars::read_payload(
+		server_public_vars& output
 	) {
 		// TODO SECURITY: don't blindly trust the server!!!
 		// TODO BANDWIDTH: optimize vars i/o
@@ -75,15 +75,50 @@ namespace net_messages {
 			return unsafe_read_message(*this, output);
 		}
 		catch (const augs::stream_read_error& err) {
-			LOG_NVPS("Failed to read new_server_solvable_vars: %x", err.what());
+			LOG_NVPS("Failed to read new_server_public_vars: %x", err.what());
 			return false;
 		}
 	}
 
-	inline bool new_server_solvable_vars::write_payload(
-		const server_solvable_vars& input
+	inline bool new_server_public_vars::write_payload(
+		const server_public_vars& input
 	) {
 		return unsafe_write_message(*this, input);
+	}
+
+	template <class F>
+	inline bool new_server_runtime_info::write_payload(
+		F block_allocator,
+		const server_runtime_info& input
+	) {
+		augs::byte_counter_stream s;
+		augs::write_bytes(s, input);
+
+		auto block = block_allocator(s.size());
+		auto pts = augs::make_ptr_write_stream(reinterpret_cast<std::byte*>(block), s.size());
+
+		augs::write_bytes(pts, input);
+
+		return true;
+	}
+
+	inline bool new_server_runtime_info::read_payload(
+		server_runtime_info& output
+	) {
+		auto data = reinterpret_cast<const std::byte*>(GetBlockData());
+		auto size = static_cast<std::size_t>(GetBlockSize());
+
+		auto pts = augs::make_ptr_read_stream(data, size);
+
+		try {
+			augs::read_bytes(pts, output);
+		}
+		catch (const augs::stream_read_error& err) {
+			LOG_NVPS("Failed to read new_server_runtime_info: %x", err.what());
+			return false;
+		}
+
+		return true;
 	}
 
 	inline bool player_avatar_exchange::read_payload(
@@ -250,34 +285,6 @@ namespace net_messages {
 
 		auto block = block_allocator(c.size());
 		std::memcpy(block, c.data(), c.size());
-
-		return true;
-	}
-
-	inline bool file_download::read_payload(
-		file_download_payload& payload
-	) {
-		auto data = reinterpret_cast<const std::byte*>(GetBlockData());
-		auto size = static_cast<std::size_t>(GetBlockSize());
-
-		if (size > max_transferred_file_size_v) {
-			return false;
-		}
-
-		payload.file_bytes.resize(size);
-		std::memcpy(payload.file_bytes.data(), data, size);
-
-		return true;
-	}
-
-	template <class F>
-	inline bool file_download::write_payload(
-		F block_allocator,
-		const file_download_payload& payload
-	) {
-		const auto& file = payload.file_bytes;
-		auto block = block_allocator(file.size());
-		std::memcpy(block, file.data(), file.size());
 
 		return true;
 	}

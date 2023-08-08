@@ -41,6 +41,9 @@ static void augs_SetClipboardText(void*, const char* text) {
 
 namespace augs {
 	namespace imgui {
+		/* Definition */
+		std::optional<ImGuiID> next_window_to_close;
+
 		context_raii::~context_raii() {
 			ImGui::DestroyContext();
 		}
@@ -88,8 +91,10 @@ namespace augs {
 			io.GetClipboardTextFn = augs_GetClipboardText;
 #endif
 
-			io.MouseDoubleClickMaxDist = 100.f;
+			//io.MouseDoubleClickMaxDist = 100.f;
 			GetStyle() = initial_style;
+
+			// ImGui::GetStyle().ScaleAllSizes(2.0f);
 		}
 
 		void setup_io_settings(

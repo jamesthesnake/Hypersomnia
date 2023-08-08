@@ -27,6 +27,8 @@ struct editor_resource_id;
 
 struct editor_official_resource_map;
 
+using name_to_node_map_type = std::unordered_map<std::string, editor_node_id>;
+
 struct editor_project {
 	// GEN INTROSPECTOR struct editor_project
 	editor_project_meta meta;
@@ -80,10 +82,10 @@ struct editor_project {
 	using O = editor_resource_pools;
 
 	template <class T>
-	decltype(auto) find_resource(O& officials, const editor_typed_resource_id<T>& id);
+	T* find_resource(O& officials, const editor_typed_resource_id<T>& id);
 
 	template <class T>
-	decltype(auto) find_resource(const O& officials, const editor_typed_resource_id<T>& id) const;
+	const T* find_resource(const O& officials, const editor_typed_resource_id<T>& id) const;
 
 	template <class F>
 	decltype(auto) on_resource(O& officials, const editor_resource_id& id, F&& callback);
@@ -92,10 +94,16 @@ struct editor_project {
 	decltype(auto) on_resource(const O& officials, const editor_resource_id& id, F&& callback) const;
 
 	template <class T>
-	decltype(auto) find_node(const editor_typed_node_id<T>& id);
+	T* find_node(const editor_node_id& id);
 
 	template <class T>
-	decltype(auto) find_node(const editor_typed_node_id<T>& id) const;
+	const T* find_node(const editor_node_id& id) const;
+
+	template <class T>
+	T* find_node(const editor_typed_node_id<T>& id);
+
+	template <class T>
+	const T* find_node(const editor_typed_node_id<T>& id) const;
 
 	template <class F>
 	decltype(auto) on_node(const editor_node_id& id, F&& callback);
@@ -109,6 +117,9 @@ struct editor_project {
 	editor_layer* find_layer(const editor_layer_id& id);
 	const editor_layer* find_layer(const editor_layer_id& id) const;
 
+	editor_layer* find_layer(const std::string& name);
+	editor_layer_id find_layer_id(const std::string& name) const;
+
 	bool recount_references(const O& officials, bool recount_officials) const;
 	bool mark_changed_resources(const editor_official_resource_map& officials_map) const;
 
@@ -116,6 +127,8 @@ struct editor_project {
 
 	template <class R, class F>
 	void for_each_resource(F&& callback) const;
+
+	name_to_node_map_type make_name_to_node_map() const;
 
 private:
 	template <class S, class Officials, class F>

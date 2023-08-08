@@ -8,8 +8,11 @@
 #include "application/setups/editor/packaged_official_content_declaration.h"
 
 #include "application/setups/editor/project/editor_project.h"
+#include "application/network/network_common.h"
 
 struct choose_arena_input {
+	editor_project_readwrite::reading_settings settings;
+
 	sol::state& lua;
 	online_arena_handle<false> handle;
 	const packaged_official_content& official;
@@ -18,13 +21,14 @@ struct choose_arena_input {
 	cosmos_solvable_significant& clean_round_state;
 	std::optional<arena_playtesting_context> playtesting_context;
 	editor_project* keep_loaded_project;
-	
+	scene_entity_to_node_map* const entity_to_node;
+
 	bool is_for_playtesting() const {
 		return playtesting_context.has_value();
 	}
 
 	void make_default() {
-		LOG_NOFORMAT("Couldn't load requested arena, so making a default one.");
+		LOG_NOFORMAT("Couldn't find arena with a matching hash.\nCreating default scene until another one is chosen.");
 
 		handle.make_default(lua, clean_round_state);
 		handle.choose_mode(test_mode_ruleset());
@@ -36,14 +40,11 @@ inline void load_arena_from_path(
 	const augs::path_type& json_path,
 	augs::secure_hash_type* const output_arena_hash
 ) {
-	const bool strict = true;
-	scene_entity_to_node_map* const entity_to_node = nullptr;
-
 	auto project = editor_project_readwrite::read_project_json(
 		json_path,
 		official_get_resources(in.official),
 		official_get_resource_map(in.official),
-		strict,
+		in.settings,
 		output_arena_hash
 	);
 
@@ -56,7 +57,7 @@ inline void load_arena_from_path(
 			in.override_game_mode,
 			project_dir,
 			in.official,
-			entity_to_node,
+			in.entity_to_node,
 			std::addressof(in.clean_round_state),
 			in.is_for_playtesting(),
 			false /* editor_preview */
@@ -71,17 +72,15 @@ inline void load_arena_from_path(
 inline void load_arena_from_string(
 	const choose_arena_input in,
 	const augs::path_type& project_dir,
-	const std::string& json_document
+	const std::string& json_document,
+	scene_entity_to_node_map* const entity_to_node = nullptr
 ) {
-	const bool strict = true;
-	scene_entity_to_node_map* const entity_to_node = nullptr;
-
 	auto project = editor_project_readwrite::read_project_json(
 		project_dir,
 		json_document,
 		official_get_resources(in.official),
 		official_get_resource_map(in.official),
-		strict,
+		in.settings,
 		nullptr /* output_arena_hash */
 	);
 
@@ -105,7 +104,7 @@ inline void load_arena_from_string(
 }
 
 struct server_choose_arena_result {
-	augs::secure_hash_type required_hash = augs::secure_hash_type();
+	augs::secure_hash_type loaded_arena_hash = augs::secure_hash_type();
 	augs::path_type arena_folder_path;
 };
 
@@ -119,7 +118,7 @@ inline server_choose_arena_result choose_arena_server(
 	if (const auto path = ::server_choose_arena_file_by(in.name); !path.empty()) {
 		LOG_NOFORMAT("Loading arena from: " + path.string());
 
-		::load_arena_from_path(in, path, std::addressof(result.required_hash));
+		::load_arena_from_path(in, path, std::addressof(result.loaded_arena_hash));
 
 		result.arena_folder_path = path.parent_path();
 	}
@@ -158,8 +157,6 @@ inline client_find_arena_result choose_arena_client(
 		altered = true;
 	}
 	else {
-		LOG_NOFORMAT("Couldn't find arena with a matching hash. Creating default.");
-
 		in.make_default();
 		altered = true;
 	}

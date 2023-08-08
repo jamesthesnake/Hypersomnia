@@ -436,7 +436,21 @@ void settings_gui_state::perform(
 					revertable_checkbox(CONFIG_NVP(window.border));
 				}
 
+				revertable_checkbox("Draw own cursor in fullscreen", config.window.draw_own_cursor_in_fullscreen);
+
+				tooltip_on_hover("In fullscreen, the game can draw its own cursor\nwhich may work better for some setups.\nE.g. sometimes the system cursor disappears in fullscreen on Windows.");
+
 				input_text<100>(CONFIG_NVP(window.name), ImGuiInputTextFlags_EnterReturnsTrue); revert(config.window.name);
+
+				revertable_checkbox("Auto-zoom", config.drawing.auto_zoom);
+
+				tooltip_on_hover("The game will automatically zoom in\nto render the same area it would render\nif it was running under 1080p resolution.");
+
+				if (!config.drawing.auto_zoom) {
+					auto indent = scoped_indent();
+
+					revertable_slider("Custom zoom", config.drawing.custom_zoom, 1.0f, 10.0f, "%.1f");
+				}
 
 				revertable_enum_radio("Vsync mode", config.window.vsync_mode);
 
@@ -792,7 +806,7 @@ void settings_gui_state::perform(
 									return "Press a key, ESC to abort, Enter to clear...";
 								}
 
-								return key ? key_to_string_shortened(*key) : "(Unassigned)";
+								return key ? key_to_string(*key) : "(Unassigned)";
 							}();
 
 							const auto captured_bg_col = rgba(255, 20, 0, 80);
@@ -839,7 +853,7 @@ void settings_gui_state::perform(
 								const auto found = find_already_assigned_action(new_key);
 
 								auto make_popup = [&]() {
-									const auto key_name = key_to_string_shortened(new_key);
+									const auto key_name = key_to_string(new_key);
 									const auto current_action_str = format_enum(a);
 
 									const auto description = typesafe_sprintf(
@@ -966,7 +980,7 @@ void settings_gui_state::perform(
 				if (auto node = scoped_tree_node("Camera")) {
 					auto& scope_cfg = config.camera;
 
-					revertable_slider(SCOPE_CFG_NVP(look_bound_expand), 0.2f, 2.f);
+					revertable_slider(SCOPE_CFG_NVP(look_bound_expand), 0.0f, 0.5f);
 					
 					revertable_checkbox(SCOPE_CFG_NVP(enable_smoothing));
 
@@ -1112,7 +1126,7 @@ void settings_gui_state::perform(
 			case settings_pane::CLIENT: {
 				auto& scope_cfg = config.client;
 
-				const auto label = typesafe_sprintf("Chosen nickname (%x-%x characters)", min_nickname_length_v, max_nickname_length_v);
+				const auto label = typesafe_sprintf("Nickname (%x-%x characters)", min_nickname_length_v, max_nickname_length_v);
 
 				revertable_input_text(label, scope_cfg.nickname);
 
@@ -1153,7 +1167,9 @@ void settings_gui_state::perform(
 					revertable_slider(SCOPE_CFG_NVP(max_predicted_client_commands), 0u, 3000u);
 				}
 
-				revertable_slider("Max file bandwidth (per second)", scope_cfg.max_file_bandwidth, 0.0f, 4.f, "%.2f MB");
+				revertable_slider("Max direct file bandwidth (per second)", scope_cfg.max_direct_file_bandwidth, 0.0f, 2.f, "%.2f MB");
+
+				tooltip_on_hover("If the external provider does not have the hosted map,\nthe client will download it directly through UDP as a fallback mechanism.\nNote this will always be the case with Editor playtesting.");
 
 				ImGui::Separator();
 
@@ -1206,19 +1222,21 @@ void settings_gui_state::perform(
 				ImGui::Separator();
 
 				do_server_vars(
-					config.server_solvable,
-					last_saved_config.server_solvable
+					config.server,
+					last_saved_config.server,
+					rcon_pane::ARENAS
 				);
 
 				ImGui::Separator();
 
 				do_server_vars(
 					config.server,
-					last_saved_config.server
+					last_saved_config.server,
+					rcon_pane::VARS
 				);
 
 				if (auto node = scoped_tree_node("RCON")) {
-					auto& scope_cfg = config.private_server;
+					auto& scope_cfg = config.server_private;
 
 					{
 						thread_local bool show = false;
@@ -1239,6 +1257,8 @@ void settings_gui_state::perform(
 					{
 						auto& scope_cfg = config.server;
 						revertable_checkbox(SCOPE_CFG_NVP(auto_authorize_loopback_for_rcon));
+						revertable_checkbox("Auto authorize internal network clients for rcon", scope_cfg.auto_authorize_internal_for_rcon);
+						tooltip_on_hover("Use cautiously. This will authorize clients coming from addresses\nlike 192.168.0.1 for total control over the server.\n\nUse only in trusted settings like in your home network.");
 					}
 				}
 
@@ -1264,6 +1284,20 @@ void settings_gui_state::perform(
 
 					revertable_drag("commands for undoing", config.editor.remember_last_n_commands, 1, 10, 2000);
 #endif
+
+					ImGui::Separator();
+
+					text("If loaded autosave, show: ");
+					ImGui::SameLine();
+					revertable_enum("##WhenAutosave", config.editor.autosave.if_loaded_autosave_show);
+					revertable_checkbox("Alert when loaded autosave", config.editor.autosave.alert_when_loaded_autosave);
+
+					if (config.editor.autosave.if_loaded_autosave_show == editor_autosave_load_option::AUTOSAVED_VERSION) {
+						tooltip_on_hover("Whenever you open a project that has autosaved changes,\nthis will show a popup that forces you to click OK so that\nyou never miss the fact you've opened an autosave.\n\nYou can safely untick it if the popup annoys you.");
+					}
+					else {
+						tooltip_on_hover("Whenever you open a project that has autosaved changes,\nthis will show a popup that forces you to click OK so that\nyou never miss the fact autosave is available.\n\nYou can safely untick it if the popup annoys you.");
+					}
 				}	
 				
 				if (auto node = scoped_tree_node("Action notifications")) {
@@ -1284,6 +1318,8 @@ void settings_gui_state::perform(
 				}
 
 				if (auto node = scoped_tree_node("Interface")) {
+					revertable_checkbox("Warp cursor when moving nodes with T", config.editor.warp_cursor_when_moving_nodes);
+
 					if (auto node = scoped_tree_node("Grid")) {
 						auto& scope_cfg = config.editor.grid.render;
 
@@ -1689,7 +1725,8 @@ bool perform_game_mode_chooser(
 }
 
 bool perform_arena_chooser(
-	arena_identifier& current_arena
+	arena_identifier& current_arena,
+	const server_runtime_info* info
 ) {
 	thread_local arena_chooser chooser;
 
@@ -1701,6 +1738,7 @@ bool perform_arena_chooser(
 		OFFICIAL_ARENAS_DIR,
 		DOWNLOADED_ARENAS_DIR,
 		EDITOR_PROJECTS_DIR,
+		info,
 		[&](const auto& chosen_arena_path) {
 			current_arena = chosen_arena_path.filename().string();
 			changed = true;
@@ -1711,75 +1749,75 @@ bool perform_arena_chooser(
 }
 
 void do_server_vars(
-	server_solvable_vars& vars,
-	server_solvable_vars& last_saved_vars
-) {
-	using namespace augs::imgui;
-
-	auto revert = make_revert_button_lambda(vars, last_saved_vars);
-
-	if (perform_arena_chooser(vars.arena)) {
-		vars.game_mode = "";
-	}
-
-	revert(vars.arena);
-
-	perform_game_mode_chooser(vars.game_mode);
-	revert(vars.game_mode);
-}
-
-void do_server_vars(
 	server_vars& vars,
-	server_vars& last_saved_vars
+	server_vars& last_saved_vars,
+	rcon_pane pane,
+	const server_runtime_info* runtime_info
 ) {
 	using namespace augs::imgui;
 
-	int field_id = 999999;
-
-	auto& scope_cfg = vars;
-
 	auto revert = make_revert_button_lambda(vars, last_saved_vars);
 
-	auto revertable_slider = [&](auto l, auto& f, auto&&... args) {
-		slider(l, f, std::forward<decltype(args)>(args)...);
-		revert(f);
-	};
+	if (pane == rcon_pane::ARENAS) {
+		if (perform_arena_chooser(vars.arena, runtime_info)) {
+			vars.game_mode = "";
+		}
 
-	auto revertable_input_text = [&](auto l, auto& f, auto&&... args) {
-		input_text(l, f, std::forward<decltype(args)>(args)...);
-		revert(f);
-	};
+		revert(vars.arena);
 
-	auto revertable_checkbox = [&](auto l, auto& f, auto&&... args) {
-		checkbox(l, f, std::forward<decltype(args)>(args)...);
-		revert(f);
-	};
-
-	text_color("General", yellow);
-
-	ImGui::Separator();
-
-	revertable_input_text(SCOPE_CFG_NVP(notified_server_list.address));
-	revertable_input_text(SCOPE_CFG_NVP(server_name));
-
-	revertable_checkbox("Allow NAT traversal", scope_cfg.allow_nat_traversal);
-
-	revertable_slider("Max file bandwidth (per second)", scope_cfg.max_file_bandwidth, 0.0f, 4.f, "%.2f MB");
-
-	if (auto node = scoped_tree_node("Time limits")) {
-		revertable_slider(SCOPE_CFG_NVP(move_to_spectators_if_afk_for_secs), 10u, 6000u);
-		revertable_slider(SCOPE_CFG_NVP(kick_if_afk_for_secs), 10u, 2 * 3600u);
-		revertable_slider(SCOPE_CFG_NVP(kick_if_no_network_payloads_for_secs), 2u, 300u);
-		revertable_slider(SCOPE_CFG_NVP(time_limit_to_enter_game_since_connection), 5u, 300u);
+		perform_game_mode_chooser(vars.game_mode);
+		revert(vars.game_mode);
 	}
+	else if (pane == rcon_pane::VARS) {
+		int field_id = 999998;
 
-	ImGui::Separator();
+		auto& scope_cfg = vars;
 
-	text_color("Dedicated server", yellow);
+		auto revertable_slider = [&](auto l, auto& f, auto&&... args) {
+			slider(l, f, std::forward<decltype(args)>(args)...);
+			revert(f);
+		};
 
-	ImGui::Separator();
+		auto revertable_input_text = [&](auto l, auto& f, auto&&... args) {
+			input_text(l, f, std::forward<decltype(args)>(args)...);
+			revert(f);
+		};
 
-	revertable_slider(SCOPE_CFG_NVP(sleep_mult), 0.0f, 0.9f);
+		auto revertable_checkbox = [&](auto l, auto& f, auto&&... args) {
+			checkbox(l, f, std::forward<decltype(args)>(args)...);
+			revert(f);
+		};
+
+		text_color("General", yellow);
+
+		ImGui::Separator();
+
+		revertable_input_text(SCOPE_CFG_NVP(notified_server_list.address));
+		revertable_input_text(SCOPE_CFG_NVP(server_name));
+
+		revertable_checkbox("I'm behind router", scope_cfg.allow_nat_traversal);
+
+		revertable_input_text(SCOPE_CFG_NVP(external_arena_files_provider));
+		tooltip_on_hover("Clients will first try to download missing files from this URL.\nIf for any reason the download fails or the files are out of date,\nthe clients will request a direct UDP transfer.");
+
+		revertable_slider("Max direct file bandwidth (per second)", scope_cfg.max_direct_file_bandwidth, 0.0f, 2.f, "%.2f MB");
+		tooltip_on_hover("If the external provider does not have the hosted map,\nclients will download it directly through UDP as a fallback mechanism.\nNote this will always be the case with Editor playtesting.");
+
+		if (auto node = scoped_tree_node("Time limits")) {
+			revertable_slider(SCOPE_CFG_NVP(move_to_spectators_if_afk_for_secs), 10u, 6000u);
+			revertable_slider(SCOPE_CFG_NVP(kick_if_afk_for_secs), 10u, 2 * 3600u);
+			revertable_slider(SCOPE_CFG_NVP(kick_if_no_network_payloads_for_secs), 2u, 300u);
+			revertable_slider(SCOPE_CFG_NVP(time_limit_to_enter_game_since_connection), 5u, 300u);
+		}
+
+		ImGui::Separator();
+
+		text_color("Dedicated server", yellow);
+
+		ImGui::Separator();
+
+		revertable_slider(SCOPE_CFG_NVP(sleep_mult), 0.0f, 0.9f);
+	}
 }
 
 #undef CONFIG_NVP

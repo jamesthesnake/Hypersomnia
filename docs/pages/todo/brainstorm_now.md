@@ -5,8 +5,221 @@ hide_sidebar: true
 permalink: brainstorm_now
 summary: That which we are brainstorming at the moment.
 ---
+
+- Tutorial levels
+    - Planting/defusing bomb?
+    - Spells but maybe just preliminary
+        - Press haste, kill enemies with the triad etc.
+    - Surfing
+    - that's all, final portal goes to the shooting range
+        - or maybe two portals for that?
+- Done
+    - Grenades
+    - Walking
+    - Ricochets
+    - Knives: 
+        - Kill with primary/secondary, could be just one level
+        - throwing especially with scroll down/up
+    - Akimbo
+    - First weapon
+        - Choosing with numbers (have to for akimbo)
+        - Holster/previous weapon
+            - Maybe the green areas could teleport when they detect step completion to mash several steps into a single level
+        - Toggle laser, show which surface is shoot through
+
+- Fix miniatures not downloading!!! Both externally and through UDP
+    - Don't make a "metaresource", this will overcomplicate things.
+        - Just force it to become a normal resource but it is always referenced (if it's backed, always with non-default properties, if it's unbacked, always default)
+
+    - disregard:
+        - Easiest will be to just always add the miniature to the external resources and never show it
+        - Just have a separate external resource field in editor project so that it doesn't appear as a valid resource in editor
+            - but gets written to json and thus requested when downloading nevertheless
+
+- Simplify stamina
+    - Remove the white edge denoting limit
+    - Dash should just take stamina on credit like in souls
+    - We can make the dash a little more expensive to compensate so that we can still do 4 dashes on a full bar
+        - This game is too fast anyway so we wouldn't want more dashes here
+
+- Settings: split Gameplay tab into HUD and Rendering (or idk name it somehow else)
+- Editor: Fix lighting inconsistency between with and without FOV
+    - Seen on shooting range with wood material
+    - we'll use vent for the tutorial
+
+- recheck what happens if missing arena is chosen, afaik it chose de_jedrula still and reported hash of 0
+
+- Editor: Grouping.
+    - Ctrl+G groupizes selection.
+        - Duplicating a group instantiates it.
+        - Can group several entities with a ctrl+g and immediately create instances this way.
+    - Group instance parameters.
+        - Position
+        - Rotation
+        - Colorize (optional)
+        - There's not much
+        - These are the only things visible in the inspector when you inspect a group instance.
+    - (Hard) Editing/customizing grouped subnodes.
+        - Proposal: have a "Groups" dock appear splitting below Layers.
+            - Only groups are visible, can expand them like layers.
+            - The subnodes then are editable.
+            - Would be best to have a full-fledged screen on black background for editing a group.
+                - because then grid will work properly etc
+            - automatically shown when you select a group subnode.
+                - goes back when you select something in Layers
+                    - or just when Layers window activates
+            - And drag-dropping the top-level group instantiates it like a resource.
+            - Groups in this window are sorted by dependencies.
+    - (Hard) Serialization.
+        - Would probably need to serialize them before nodes.
+        - Even though there are nodes inside too, but they are more "virtual"
+
+
+- Fix spawns in gungame mode - they're currently shuffled per-round
+
+- Alright we really need to sort out how custom maps are stored on the server
+    - for now just
+        - symlink user/downloads to ~/community_arenas per each update
+        - page with all downloads etc. should point to ~/community_arenas and say "Community Arenas
+    - ultimately
+        - 1) Separate official/custom maps on hypersomnia.xyz
+        - 2) Keep official ones immutably in content/arenas (done)
+        - 3) Keep custom ones in .config/user/downloads/arenas and point the php page to it (works with .tar.gz too just have to symlink each time)
+        - For custom servers it sorta works out of the box since they don't serve the php page
+
+- Server might choose a map whose new version is available
+    - For now: We'll have handled most cases if we auto-update the map we host. Or prompt to update it.
+        - Why?
+            - The dedicated servers will probably restart periodically
+        - People will most likely choose the catalogue to choose the map to host either way
+            - but won't hurt to prompt
+
+    - Might happen when hosting from the main menu..
+    - ..or during gameplay
+    - in both cases we can just have an std::future that switches to the new map once it's completed
+        - and simply prevent choose_arena from choosing this map
+        - in which case, if it's hosted from the main menu, it'd go to the test scene
+    - However we need to check if a new version is available and that takes a bit
+        - So we'd like to always switch to the new map preemptively, maybe at least when hosting
+        - and then run the updater in the background, the files will have been loaded anyway
+        - while we check for the new version, prevent direct udp download?
+        - in this case we'd like to avoid checking for hash when client downloads externally, because the external provider will be the source of truth
+- Syncing maps (even manually through RCON) might break existing UDP download sessions
+    - We either:
+        - Load all files to memory per hash but it will grow dangerously
+        - Prevent syncing any files until no udp download sessions are live
+            - Only problematic until we implement kicking/banning
+
+
+- maybe migrate server to appimage after all
+    - but we'll still have a problem with syncing the new config force lua from the repo
+        - maybe we can sync only this file and have our own config.lua
+    - just prepare one with -g for the server
+    - will still require less space than tar.gz + sfx
+    - just find out how to not strip debug symbols from the appimage 
+
+- masterserver can easily be controlled with https+api key
+
+- keep being spectator when half ends
+
+- a notice on /servers to not launch with screen or something else to be able to autoupdate
+
+- Updating all the servers automatically
+    - MS could send packets with signatures of the new version 
+        - Then the servers will know it's legit, even if it's spoofed it literally only helps
+        - We don't even have to download the entire archive then. We'll just have one more thing to sign, the new version message.
+
+- Map catalogue
+    - Note external arena provider and ingame catalogue source are conceptually two different links
+        - even though they'll coincide for the official server
+        - BUT After all let's make the catalogue read from the server vars.
+            - Why? Because if the end-user chooses a different provider they'll expect that hosting a server will take the same link as provider too.
+
+    - Problems to solve
+        - What if we update maps while the servers already have them loaded?
+            - The existing clients still need a way to download the correct ones
+            - The custom servers will likely have tcp/ip file downloads enabled so it should still work as a backstop
+            - Whereas we can take care to restart the official server when we update maps
+        - The server has to know whether the arena it hosts is actually available to download or it will constantly send wrong links
+            - But the link it sends is the same anyway; why not just send the host in the settings and let the client figure it out on their own?
+                - let the client figure out whether the map is on the external provider and just send requests if its not
+
+            - Why not just query the json file at the host every time the map is hosted/chosen by the server?
+                - If it differs, or can't reach the host, only allow direct transfers
+                - Can even query every time someone wants to download
+                    - the client waits anyway for a file payload so they can wait until we query the host too no prob
+                    - anyways if it's hosted from user/projects than we always disallow anyway, we only check with user/downloads
+
+            - btw we'll just send the download link once which will be the arena root and the client will download the rest on its own
+
+            - Plus the dedicated servers with public ip can actually make server's file coincide with what is served over https 
+
+            - How about we determine it by whether it's in user/projects or in downloaded arenas?
+                - though downloaded arenas might be from somewhere else too
+            - if user/projects - always direct
+            - 
+    - First let's replace udp downloads with direct http downloads
+        - Idea: server could provide a link instead of an actual file
+        - This is tempting because it's the server's responsibility then to provide up to date files and we can preserve the whole flow
+    - Generally, the client asks for hash - it gets either the block message (or tcp/ip connection request) or the external link message
+- Maybe it's easier to just skip the bullshit with optional links and just start tcp ip connection
+    - Most of the time arena files will be hosted on the same server
+        - Well they have to have these files anyway to run the simulation
+    - yea i think it'll be better for now
+- Unless we autoupload any map to the host
+    - Yeah I think it's bad to assume tcp will also work after punching
+- In any case, if we're not doing tcp/ip, we need the file_download_link payload regardless if we're doing uploads or some relay
+
+
+- post external fixing
+    - nah it's something with hashes actually, probably autosaves at work again, or clrfs, see the downloaded logs
+
+    - maybe increase http timeout to 3? if there were problems with externals we'd see it on our own
+    - send stat keepalives more often because they get stuck or just not stop sending packets at all
     
-- current_arena -> arena/map
+- We could also use UDT later, looks legit
+    - just send the list of all hashes once and send it in a single chunk?
+    - per file is okay too I guess
+
+- guess for now we could leave a conservative number like 1mb and focus on ingame map catalogue
+
+- we could just send big-ass packets and hope for the best but with just 1% packet loss we'd lose 10% packets at 600 kb/s (since then i'd need to send 10 packets), that becomes way worse if the loss is 2-3%
+    - so literally any block based approach that i come up with will be vastly better
+
+- well the udp approach is certainly more fun and decentralized
+    - and we can easily read the files asynchronously
+        - note that since the messages are by definition unreliable the clients themselves will repeat the requests until the files are loaded lol
+    - just have to send the project file size and then ask for the list of all file sizes in a block
+
+- wait.. can't we just setup a tcp/ip relay with the masterserver?
+    - We need it anyway to establish a connection in the first place
+
+    
+- Such large packet buffers could really fuck up our performance
+    - and these udp transfers might still fail
+    - but let's at least test it
+
+- Http downloads from external arena provider.
+    - Problem: a server might easily end up with out-of-date maps on disk.
+        - Either someone might start a dedicated server without updating it (though the normal game client will autoupdate 'tracked' maps on start)
+            - Or a running server might end up having out-of-date maps if new ones are uploaded to some public provider.
+    - The server can check for a specific map update *before* launching the map.
+        - The previous map can simply be on indefinitely
+        - Could even be precached during match summary
+
+- add player lists to server browser
+
+- map statistics from server_list_json
+    - counted only when >= 2 players are fighting
+
+- show tips with names in test scene setup
+
+- verify those map file hashes either during upload stage or hosting stage
+
+- settings ui overhaul
+    - put some controls switches under Advanced
+    - logarithmic scale for sound?
+        - and also make default master less than 1
 
 - How do we go from here?
     - To not have to repeatedly setup some common ruleset data too (like announcer sounds), we'd have to have not a variant, but an actual tuple of all sub-modes.
@@ -342,7 +555,7 @@ summary: That which we are brainstorming at the moment.
             - So player's avatar wouldn't arrive until after we've downloaded the map
                 - Not a bad thing; they will be in spectators anyway and this way we even prioritize bandwidth
         - So the q is if the game will behave correctly when we can stay in downloading state both during IN_GAME state as well as RECEIVING_INITIAL_SNAPSHOT
-            - Cannot be an earlier state since the first server_solvable_vars triggers RECEIVING_INITIAL_SNAPSHOT
+            - Cannot be an earlier state since the first server_public_vars triggers RECEIVING_INITIAL_SNAPSHOT
                 - it will stay in that mode until we finish download
                     - that is because IN_GAME is triggered only with the first initial arena state payload
 
@@ -365,7 +578,7 @@ summary: That which we are brainstorming at the moment.
 - What happens if the current arena changes during our download session?
     - Note as it stands we're applying server solvables as they go
         - We only pause the entropy streams 
-    - So I guess we should also resynchronize the server solvable vars
+    - So I guess we should also resynchronize the server game vars
         - Wouldn't it be easier to stop all solvable streams and just revert client back to WELCOME_ARRIVED state upon resync?
             - And do not interrupt map downloads
 
@@ -378,7 +591,7 @@ summary: That which we are brainstorming at the moment.
 - Pausing solvable streams for clients
     - Do we want to though?
         - Some important public client settings are sent through
-    - We can easily interrupt just the entropy streams and leave server solvable vars and public settings intact
+    - We can easily interrupt just the entropy streams and leave server game vars and public settings intact
 
 - Disable naming maps "autosave"
     - Otherwise it might fuck up maps, autosave will literally be deleted
@@ -418,7 +631,7 @@ able to request per map
         - Why? The server might change the map while the client is already in game!
     - So let's even begin by designing AND testing for this case
         - SO - What if we're already connected and the map changes to a non-existing map?
-            - This could only happen with a new server solvable vars
+            - This could only happen with a new server game vars
 
     - The server does not really have to hold the json file in memory, although it might be useful
         - At first we can treat it like any other file
@@ -603,7 +816,7 @@ able to request per map
                 - The only corner case is when a mapper wants to host a version of the map they've downloaded but we'll handle it later
     - It will be mostly transparent to the user because they'll choose the map from the arena selector
     - current_arena is literally just a *hint* for the client where to look for a map with a given hash
-        - will be sent through server solvable vars too probably
+        - will be sent through server game vars too probably
         - server_vars (note: not SOLVABLE vars) will have a load_arena_by_path
             - This will be the setting set by the arena selector and this will load the arena once
                 - Nothing stops us from loading a map external to the game even although that's not recommended

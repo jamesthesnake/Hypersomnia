@@ -248,6 +248,20 @@ namespace augs {
 		return document;
 	}
 
+	inline rapidjson::Document json_document_from(const char* const json, const std::size_t length) {
+		rapidjson::Document document;
+
+		if (document.Parse(json, length).HasParseError()) {
+			throw json_deserialization_error(
+				"Couldn't parse JSON: %x\nOffset: %x", 
+				GetParseError_En(document.GetParseError()),
+				document.GetErrorOffset()
+			);
+		}
+
+		return document;
+	}
+
 	inline rapidjson::Document json_document_from(const augs::path_type& path) {
 		return json_document_from(file_to_string(path));
 	}
@@ -346,7 +360,13 @@ namespace augs {
 				[&to](const auto& label, const auto& field) {
 					using Field = remove_cref<decltype(field)>;
 					if constexpr(!is_padding_field_v<Field> && !json_ignore_v<Field>) {
-						if constexpr(is_maybe_v<Field>) {
+						if constexpr(is_optional_v<Field>) {
+							if (field.has_value()) {
+								to.Key(label);
+								write_json(to, *field);
+							}
+						}
+						else if constexpr(is_maybe_v<Field>) {
 							if (field.is_enabled) {
 								to.Key(label);
 								write_json(to, field.value);
