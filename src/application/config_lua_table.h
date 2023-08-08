@@ -66,6 +66,7 @@ enum class activity_type {
 	MAIN_MENU,
 
 	SHOOTING_RANGE,
+	TUTORIAL,
 
 	EDITOR,
 	EDITOR_PROJECT_SELECTOR,
@@ -105,9 +106,10 @@ struct config_lua_table {
 	config_lua_table(sol::state&, const augs::path_type& config_lua_path);
 
 	// GEN INTROSPECTOR struct config_lua_table
-	activity_type last_activity = activity_type::MAIN_MENU;
+	activity_type last_activity = activity_type::TUTORIAL;
 	launch_type launch_at_startup = launch_type::LAST_ACTIVITY;
 
+	bool skip_tutorial = false;
 	bool log_to_live_file = false;
 	bool remove_live_log_file_on_start = true;
 
@@ -165,8 +167,7 @@ struct config_lua_table {
 
 	server_start_input server_start;
 	server_vars server;
-	server_solvable_vars server_solvable;
-	private_server_vars private_server;
+	server_private_vars server_private;
 	augs::dedicated_server_input dedicated_server;
 
 	client_start_input client_start;

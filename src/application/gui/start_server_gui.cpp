@@ -11,13 +11,17 @@
 #define SCOPE_CFG_NVP(x) format_field_name(std::string(#x)) + "##" + std::to_string(field_id++), scope_cfg.x
 
 std::string censor_ips(std::string text);
-bool perform_arena_chooser(arena_identifier& current_arena);
+
+bool perform_arena_chooser(
+	arena_identifier& current_arena,
+	const server_runtime_info* info = nullptr
+);
+
 bool perform_game_mode_chooser(game_mode_name_type& current_arena);
 
 bool start_server_gui_state::perform(
 	server_start_input& into,
 	server_vars& into_vars,
-	server_solvable_vars& into_solvable_vars,
 
 	const nat_detection_session* nat_detection,
 	const port_type currently_bound_port
@@ -107,15 +111,6 @@ as well as to test your skills in a laggy environment.
 		text_color(::censor_ips(log_text), log_color);
 	}
 
-#if NDEBUG && PLATFORM_UNIX
-	const bool is_dedicated = instance_type == server_instance_type::DEDICATED;
-	const bool please_use_cmdline = is_dedicated;
-#else
-	const bool please_use_cmdline = false;
-#endif
-
-	const bool is_disabled = please_use_cmdline;
-
 	{
 		auto child = scoped_child("host view", ImVec2(0, -(ImGui::GetFrameHeightWithSpacing() + 4)));
 		auto width = scoped_item_width(ImGui::GetWindowWidth() * 0.35f);
@@ -124,11 +119,11 @@ as well as to test your skills in a laggy environment.
 
 		input_text("Server name", into_vars.server_name);
 
-		if (perform_arena_chooser(into_solvable_vars.arena)) {
-			into_solvable_vars.game_mode = "";
+		if (perform_arena_chooser(into_vars.arena)) {
+			into_vars.game_mode = "";
 		}
 
-		perform_game_mode_chooser(into_solvable_vars.game_mode);
+		perform_game_mode_chooser(into_vars.game_mode);
 
 		slider("Slots", into.slots, 2, 64);
 
@@ -142,10 +137,10 @@ as well as to test your skills in a laggy environment.
 			val = static_cast<unsigned short>(std::clamp(chosen_port, 0, 65535));
 		};
 
-		checkbox("Allow NAT traversal", into_vars.allow_nat_traversal);
+		checkbox("I'm behind router", into_vars.allow_nat_traversal);
 
 		if (ImGui::IsItemHovered()) {
-			text_tooltip("If you're behind a router, leave this on.\n\nThis technique lets clients establish a direct connection with your server -\nwithout port forwarding necessary.\n\nYou can disable this if you plan to only play over LAN.");
+			text_tooltip("Enables NAT traversal. If you're behind a router, leave this on.\n\nThis technique lets clients establish a direct connection with your server -\nwithout port forwarding necessary.\n\nYou can disable this if you plan to only play over LAN.");
 		}
 
 		{
@@ -220,14 +215,9 @@ as well as to test your skills in a laggy environment.
 			ImGui::Separator();
 		}
 
-		if (is_disabled) {
-			text_color("On Linux, please use the command line to spawn a dedicated server.", red);
-		}
-		else {
-			text_disabled("See Settings->Server for more options to tweak.\n\n");
+		text_disabled("See Settings->Server for more options to tweak.\n\n");
 
-			//text_disabled("Tip: to quickly host a server, you can press Shift+H here or in the main menu,\ninstead of clicking \"Launch!\" with your mouse.");
-		}
+		//text_disabled("Tip: to quickly host a server, you can press Shift+H here or in the main menu,\ninstead of clicking \"Launch!\" with your mouse.");
 	}
 
 	{
@@ -236,7 +226,7 @@ as well as to test your skills in a laggy environment.
 		ImGui::Separator();
 
 		{
-			auto scope = maybe_disabled_cols({}, !is_nickname_valid_characters(into_vars.server_name) || is_disabled);
+			auto scope = maybe_disabled_cols({}, !is_nickname_valid_characters(into_vars.server_name));
 
 			if (ImGui::Button("Launch!")) {
 				result = true;

@@ -19,7 +19,9 @@ enum class self_update_result_type {
 	UPGRADED,
 	UP_TO_DATE,
 
-	FIRST_LAUNCH_AFTER_UPGRADE
+	FIRST_LAUNCH_AFTER_UPGRADE,
+
+	UPDATE_AVAILABLE
 };
 
 struct self_update_result {
@@ -30,6 +32,8 @@ struct self_update_result {
 };
 
 self_update_result check_and_apply_updates(
+	const augs::path_type& current_appimage_path,
+	bool only_check_availability_and_quit,
 	const augs::image& imgui_atlas_image,
 	const http_client_settings& settings,
 	augs::window_settings window_settings,

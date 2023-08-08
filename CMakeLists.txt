@@ -748,6 +748,9 @@ set(HYPERSOMNIA_CODEBASE_CPPS
 	"src/application/setups/project_selector/project_selector_setup.cpp"
 	"src/view/hud_messages/hud_messages_gui.cpp"
 	"src/application/setups/editor/gui/editor_toolbar_gui.cpp"
+	"src/application/setups/client/arena_downloading_session.cpp"
+	"src/application/setups/client/https_file_downloader.cpp"
+	"src/application/gui/map_catalogue_gui.cpp"
 )
 
 # The rest of 3rdparty libraries with minimal amount of source files.
@@ -1188,6 +1191,10 @@ endif()
 
 if(UNIX)
 	set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pthread")
+endif()
+
+if(LINUX)
+	set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -unwindlib=libgcc")
 endif()
 
 # We configure additional flags for linker.
@@ -1765,7 +1772,7 @@ if(${CMAKE_GENERATOR} STREQUAL "Unix makefiles" OR ${CMAKE_GENERATOR} STREQUAL "
 	set(HYPERSOMNIA_WORKING_DIR ${HYPERSOMNIA_EXE_RESOURCES_DIR})
 
 	add_custom_target(run
-		COMMAND Hypersomnia
+		COMMAND Hypersomnia --keep-cwd
 		DEPENDS Hypersomnia
 		WORKING_DIRECTORY ${HYPERSOMNIA_WORKING_DIR} 
 	)
@@ -1793,7 +1800,7 @@ if(${CMAKE_GENERATOR} STREQUAL "Unix makefiles" OR ${CMAKE_GENERATOR} STREQUAL "
 	)
 
 	add_custom_target(tests
-		COMMAND Hypersomnia --unit-tests-only --test-fp-consistency 20000000
+		COMMAND Hypersomnia --keep-cwd --unit-tests-only --test-fp-consistency 20000000
 		DEPENDS Hypersomnia
 		WORKING_DIRECTORY ${HYPERSOMNIA_WORKING_DIR} 
 	)

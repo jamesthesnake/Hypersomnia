@@ -142,8 +142,6 @@ entity_id requested_equipment::generate_for_impl(
 	auto make_ammo_piece = [&](const auto& flavour) {
 		if (flavour.is_set()) {
 			if (const auto piece = make_owned_item(flavour)) {
-				piece.set_charges(1);
-
 				if (const auto mag_deposit = piece[slot_function::ITEM_DEPOSIT]) {
 					const auto final_charge_flavour = [&]() {
 						if (eq.non_standard_charge.is_set()) {
@@ -289,9 +287,11 @@ entity_id requested_equipment::generate_for_impl(
 
 	if constexpr(!to_the_ground) {
 		if (const auto sentience = character.template find<components::sentience>()) {
-			auto& haste = sentience->template get<haste_perk_instance>();
-			haste.timing.set_for_duration(haste_time * 1000, cosm.get_timestamp()); 
-			haste.is_greater = true;
+			if (haste_time > 0.f) {
+				auto& haste = sentience->template get<haste_perk_instance>();
+				haste.timing.set_for_duration(haste_time * 1000, cosm.get_timestamp()); 
+				haste.is_greater = true;
+			}
 
 			for (const auto& s : eq.spells_to_give) {
 				if (s) {

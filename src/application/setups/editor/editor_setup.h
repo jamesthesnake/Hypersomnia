@@ -54,6 +54,7 @@
 
 #include "application/main/miniature_generator.h"
 #include "application/network/network_common.h"
+#include "application/arena/scene_entity_to_node_map.h"
 
 struct config_lua_table;
 struct draw_setup_gui_input;
@@ -106,6 +107,9 @@ using editor_arena_handle = online_arena_handle<C>;
 class editor_setup : public default_setup_settings, public arena_gui_mixin<editor_setup> {
 	using arena_gui_base = arena_gui_mixin<editor_setup>;
 
+	editor_settings settings;
+	editor_autosave_settings last_autosave_settings;
+
 	augs::timer autosave_timer;
 
 	const packaged_official_content& official;
@@ -123,7 +127,7 @@ class editor_setup : public default_setup_settings, public arena_gui_mixin<edito
 
 	bool playtesting = false;
 
-	per_entity_type_array<std::vector<editor_node_id>> scene_entity_to_node;
+	scene_entity_to_node_map scene_entity_to_node;
 
 	editor_project project;
 	editor_gui gui;
@@ -149,8 +153,6 @@ class editor_setup : public default_setup_settings, public arena_gui_mixin<edito
 	editor_filesystem_node official_files_root;
 
 	const editor_project_paths paths;
-	editor_settings settings;
-	editor_autosave_settings last_autosave_settings;
 
 	editor_recent_message recent_message;
 
@@ -184,7 +186,9 @@ class editor_setup : public default_setup_settings, public arena_gui_mixin<edito
 	void rescan_missing_pathed_resources(std::vector<augs::path_type>* out_report = nullptr);
 	void on_resource_references_changed();
 
-	void remove_autosave_file();
+	void remove_last_saved_json();
+	void restore_last_saved_json();
+
 	void force_autosave();
 	void autosave_now_if_needed();
 	bool autosave_needed() const;
@@ -244,6 +248,7 @@ public:
 	static constexpr bool has_additional_highlights = true;
 
 	editor_setup(
+		const editor_settings& settings,
 		const packaged_official_content& official,
 		const augs::path_type& project_path
 	);
@@ -374,7 +379,7 @@ public:
 
 	void scroll_once_to(inspected_variant);
 
-	std::unordered_map<std::string, editor_node_id> make_name_to_node_map() const;
+	name_to_node_map_type make_name_to_node_map() const;
 	std::unordered_map<std::string, editor_resource_id> make_name_to_internal_resource_map() const;
 
 	std::string get_free_node_name_for(const std::string& new_name) const;
@@ -803,4 +808,6 @@ public:
 
 	void rebuild_project_internal_resources_gui();
 	void recount_internal_resource_references_if_needed();
+
+	bool warp_cursor_once = false;
 };

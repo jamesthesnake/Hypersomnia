@@ -36,6 +36,9 @@
 #include "hypersomnia_version.h"
 #include "application/main/self_updater.h"
 
+#include "application/arena/choose_arena.h"
+#include "application/setups/editor/packaged_official_content.h"
+
 using namespace augs::event::keys;
 using namespace augs::gui::text;
 using namespace augs::gui;
@@ -85,6 +88,7 @@ void main_menu_setup::query_latest_news(const std::string& url) {
 
 main_menu_setup::main_menu_setup(
 	sol::state& lua,
+	const packaged_official_content& official,
 	const main_menu_settings settings
 ) {
 	try {
@@ -94,7 +98,7 @@ main_menu_setup::main_menu_setup(
 		// LOG("Warning: could not load the main menu theme:\n%x", err.what());
 	}
 
-	query_latest_news(settings.latest_news_url);
+	//query_latest_news(settings.latest_news_url);
 
 	const auto menu_config_patch_path = "content/menu/config.lua";
 
@@ -122,12 +126,55 @@ main_menu_setup::main_menu_setup(
 	}
 
 	// TODO: actually load a cosmos with its resources from a file/folder
-	const bool is_intro_scene_available = settings.menu_intro_scene_intercosm_path.string().size() > 0;
+	const bool is_intro_scene_available = settings.menu_background_arena_path.string().size() > 0;
 
-	auto& cosm = intro.world;
+	auto& cosm = scene.world;
 
 	if (is_intro_scene_available) {
-		intro.make_test_scene(lua, { false, 60 });
+		editor_project project;
+
+		all_modes_variant mv;
+		all_rulesets_variant rv;
+
+		cosmos_solvable_significant dummy;
+
+		current_arena_folder = settings.menu_background_arena_path;
+		auto paths = editor_project_paths(current_arena_folder);
+
+		auto handle = online_arena_handle<false>{ 
+			mv,
+			scene,
+			scene.world,
+			rv,
+			dummy
+		};
+
+		::load_arena_from_path(
+			{
+				editor_project_readwrite::reading_settings(),
+				lua,
+				handle,
+				official,
+				"",
+				"",
+				dummy,
+				std::nullopt,
+				&project,
+				nullptr
+			},
+
+			paths.project_json,
+			nullptr
+		);
+
+		if (auto m = std::get_if<test_mode>(&mv)) {
+			mode = *m;
+		}
+
+		if (auto r = std::get_if<test_mode_ruleset>(&rv)) {
+			ruleset = *r;
+		}
+
 		viewed_character_id = cosm[mode.lookup(mode.add_player({ ruleset, cosm }, "Player", faction_type::METROPOLIS))].get_id();
 	}
 
@@ -135,7 +182,7 @@ main_menu_setup::main_menu_setup(
 	initial_step_number = cosm.get_total_steps_passed();
 
 #if 0
-	gui.root.buttons[main_menu_button_type::CONNECT_TO_OFFICIAL_SERVER].set_appearing_caption("Connect to official server");
+	gui.root.buttons[main_menu_button_type::PLAY_ON_THE_OFFICIAL_SERVER].set_appearing_caption("Connect to official server");
 	gui.root.buttons[main_menu_button_type::BROWSE_SERVERS].set_appearing_caption("Browse servers");
 	gui.root.buttons[main_menu_button_type::HOST_SERVER].set_appearing_caption("Host server");
 	gui.root.buttons[main_menu_button_type::CONNECT_TO_SERVER].set_appearing_caption("Connect to server");
@@ -165,6 +212,7 @@ void main_menu_setup::draw_overlays(
 	const augs::baked_font& gui_font,
 	const vec2i screen_size
 ) const {
+#if MENU_LOGO_IN_GUI
 	const auto game_logo = necessarys.at(assets::necessary_image_id::MENU_GAME_LOGO);
 	const auto game_logo_size = game_logo.get_original_size();
 
@@ -172,15 +220,24 @@ void main_menu_setup::draw_overlays(
 	game_logo_rect.set_position({ screen_size.x / 2.f - game_logo_size.x / 2.f, 50.f });
 	game_logo_rect.set_size(game_logo_size);
 
-	output.aabb(game_logo, game_logo_rect);
+	const bool draw_menu_logo = false;
 
-	if (is_ready(latest_news)) {
+	if (draw_menu_logo) {
+		output.aabb(game_logo, game_logo_rect);
+	}
+#endif
+
+	(void)necessarys;
+
+	const bool show_latest_news = false;
+
+	if (show_latest_news) {
 		print_stroked(
 			output,
 			vec2i(latest_news_pos),
-			from_bbcode ( latest_news.get(), { gui_font, cyan } )
+			from_bbcode ( typesafe_sprintf("[color=green]Latest change:[/color] %x", hypersomnia_version().commit_message), { gui_font, white } )
 		);
-	};
+	}
 
 	const auto s = style { gui_font, white };
 

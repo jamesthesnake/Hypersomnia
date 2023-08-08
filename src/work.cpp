@@ -58,6 +58,7 @@
 #include "application/gui/start_client_gui.h"
 #include "application/gui/start_server_gui.h"
 #include "application/gui/browse_servers_gui.h"
+#include "application/gui/map_catalogue_gui.h"
 #include "application/gui/ingame_menu_gui.h"
 
 #include "application/masterserver/masterserver.h"
@@ -108,6 +109,7 @@
 
 #include "application/main/self_updater.h"
 #include "application/setups/editor/packaged_official_content.h"
+#include "augs/string/parse_url.h"
 #include "work_result.h"
 
 std::function<void()> ensure_handler;
@@ -216,14 +218,35 @@ work_result work(const int argc, const char* const * const argv) try {
 		result.audio.enable_hrtf = false;
 #endif
 
+#if PLATFORM_LINUX
+		/* 
+			We don't yet properly implement detecting whether the app is in fs or not. 
+			So better use the system cursor so that we don't clip it accidentally. 
+		*/
+
+		result.window.draw_own_cursor_in_fullscreen = false;
+#else
+		result.window.draw_own_cursor_in_fullscreen = true;
+#endif
+
 #if PLATFORM_MACOS
-		result.window.fullscreen = false;
+		result.window.fullscreen = true;
 #endif
 
 		return result_ptr;
 	}();
 
 	auto& canon_config = *canon_config_ptr;
+
+	LOG("Parsing command-line parameters.");
+
+	const auto params = cmd_line_params(argc, argv);
+	LOG("Complete command line:\n%x", params.complete_command_line);
+	LOG("Parsed as:\n%x", params.parsed_as);
+
+	if (!params.appimage_path.empty()) {
+		LOG("Running from an AppImage: %x", params.appimage_path);
+	}
 
 	auto config_ptr = [&]() {
 		auto result = std::make_unique<config_lua_table>(canon_config);
@@ -234,6 +257,14 @@ work_result work(const int argc, const char* const * const argv) try {
 
 		if (augs::exists(force_config_path)) {
 			result->load_patch(lua, force_config_path);
+		}
+
+		if (params.no_router) {
+			result->server.allow_nat_traversal = false;
+		}
+
+		if (result->client.nickname.empty()) {
+			result->client.nickname = augs::get_user_name();
 		}
 
 		return result;
@@ -253,10 +284,6 @@ work_result work(const int argc, const char* const * const argv) try {
 
 		::log_timestamp_format = config.log_timestamp_format;
 	}
-
-	LOG("Parsing command-line parameters.");
-
-	const auto params = cmd_line_params(argc, argv);
 
 	if (::log_to_live_file) {
 		if (config.remove_live_log_file_on_start) {
@@ -326,7 +353,7 @@ work_result work(const int argc, const char* const * const argv) try {
 
 	auto last_update_result = self_update_result();
 	
-	if (config.http_client.update_on_launch && !params.suppress_autoupdate) {
+	if (params.only_check_update_availability_and_quit || (config.http_client.update_on_launch && !params.suppress_autoupdate)) {
 		/* 
 			TODO: SKIP UPDATING IF THERE ARE UNSAVED CHANGES IN EDITOR PROJECTS! 
 			This could potentially erase someone's work because of breaking changes to editor files' binary structure!
@@ -343,6 +370,8 @@ work_result work(const int argc, const char* const * const argv) try {
 		;
 
 		last_update_result = check_and_apply_updates(
+			params.appimage_path,
+			params.only_check_update_availability_and_quit,
 			*imgui_atlas_image,
 			config.http_client,
 			config.window,
@@ -350,6 +379,15 @@ work_result work(const int argc, const char* const * const argv) try {
 		);
 
 		LOG_NVPS(last_update_result.type);
+
+		if (params.only_check_update_availability_and_quit) {
+			if (last_update_result.type == update_result::UPDATE_AVAILABLE) {
+				return work_result::REPORT_UPDATE_AVAILABLE;
+			}
+			else {
+				return work_result::REPORT_UPDATE_UNAVAILABLE;
+			}
+		}
 
 		if (last_update_result.type == update_result::UPGRADED) {
 			LOG("work: Upgraded successfully. Requesting relaunch.");
@@ -632,6 +670,98 @@ work_result work(const int argc, const char* const * const argv) try {
 
 		};
 
+		{
+			bool sync = false;
+
+			if (config.server.sync_all_external_arenas_on_startup) {
+				LOG("sync_all_external_arenas_on_startup specified.");
+				sync = true;
+			}
+			else if (params.sync_external_arenas) {
+				LOG("--sync-external-arenas specified.");
+				sync = true;
+			}
+
+			if (sync) {
+				const auto& provider = config.server.external_arena_files_provider;
+
+				if (const auto parsed = parsed_url(provider); parsed.valid()) {
+					LOG("External arena provider: %x", provider);
+
+					headless_map_catalogue headless;
+
+					augs::timer last_report;
+
+					auto report_progress = [&]() {
+						if (const auto& dl = headless.get_downloading()) {
+							if (const auto current = dl->get_current_map_name()) {
+								const auto i = dl->get_current_map_index();
+								const auto total = dl->get_total_maps();
+
+								LOG(
+									"Syncing %x (%x/%x): %2f% complete. (Total: %2f%)", 
+									*current, i, total,
+									100 * dl->get_current_map_progress(),
+									100 * dl->get_total_progress()
+								);
+							}
+						}
+					};
+
+					while (true) {
+						if (headless.advance({ provider }) == headless_catalogue_result::LIST_REFRESH_COMPLETE) {
+							const auto last_error = headless.get_list_catalogue_error();
+
+							if (last_error.size() > 0) {
+								LOG("Failed to download the catalogue. Reason:\n%x", last_error);
+								break;
+							}
+							else {
+								const auto all = headless.launch_download_all({ provider });
+
+								if (all.empty()) {
+									LOG("All arenas are up to date. There's nothing to sync.");
+									break;
+								}
+
+								std::string all_report;
+
+								for (const auto& a : all) {
+									all_report += a.name + ", ";
+								}
+
+								if (all_report.size() >= 2) {
+									all_report.pop_back();
+									all_report.pop_back();
+								}
+
+								LOG("Syncing %x arena(s): %x", all.size(), all_report);
+							}
+						}
+
+						if (last_report.get<std::chrono::seconds>() > 0.5) {
+							last_report.reset();
+							report_progress();
+						}
+
+						if (headless.finalize_download()) {
+							LOG("Finished syncing all arenas.");
+							break;
+						}
+
+						if (handle_sigint()) {
+							return work_result::SUCCESS;
+						}
+
+						yojimbo_sleep(1.0 / 1000);
+					}
+				}
+				else {
+					LOG("Couldn't parse arena provider URL: \"%x\". Aborting sync.", provider);
+				}
+			}
+		}
+
 		if (config.server.allow_nat_traversal) {
 			if (nat_detection.has_value()) {
 				if (auxiliary_socket.has_value()) {
@@ -664,9 +794,8 @@ work_result work(const int argc, const char* const * const argv) try {
 			*official,
 			start,
 			config.server,
-			config.server_solvable,
+			config.server_private,
 			config.client,
-			config.private_server,
 			config.dedicated_server,
 
 			make_server_nat_traversal_input(),
@@ -799,18 +928,20 @@ work_result work(const int argc, const char* const * const argv) try {
 		return main_menu != nullptr;
 	};
 
-	auto emplace_main_menu = [&p = main_menu] (auto&&... args) {
-		if (p == nullptr) {
-			p = std::make_unique<main_menu_setup>(std::forward<decltype(args)>(args)...);
-		}
-	};
-
 	settings_gui_state settings_gui = std::string("Settings");
 	start_client_gui_state start_client_gui = std::string("Connect to server");
 	start_server_gui_state start_server_gui = std::string("Host a server");
 
 	bool was_browser_open_in_main_menu = false;
 	browse_servers_gui_state browse_servers_gui = std::string("Browse servers");
+	map_catalogue_gui_state map_catalogue_gui = std::string("Download maps");
+
+	auto emplace_main_menu = [&map_catalogue_gui, &p = main_menu] (auto&&... args) {
+		if (p == nullptr) {
+			p = std::make_unique<main_menu_setup>(std::forward<decltype(args)>(args)...);
+			map_catalogue_gui.rebuild_miniatures();
+		}
+	};
 
 	auto find_chosen_server_info = [&]() {
 		return browse_servers_gui.find_entry(config.client_start);
@@ -859,6 +990,16 @@ work_result work(const int argc, const char* const * const argv) try {
 
 	auto has_current_setup = [&]() {
 		return current_setup != nullptr;
+	};
+
+	auto is_during_tutorial = [&]() {
+		if (has_current_setup()) {
+			if (const auto setup = std::get_if<test_scene_setup>(std::addressof(*current_setup))) {
+				return setup->is_tutorial();
+			}
+		}
+
+		return false;
 	};
 
 	auto restore_background_setup = [&]() {
@@ -938,6 +1079,10 @@ work_result work(const int argc, const char* const * const argv) try {
 				new_player_metas = setup.get_new_player_metas();
 				new_ad_hoc_images = setup.get_new_ad_hoc_images();
 			});
+
+			if (!has_current_setup()) {
+				new_ad_hoc_images = map_catalogue_gui.get_new_ad_hoc_images();
+			}
 		}
 
 		streaming.load_all({
@@ -973,6 +1118,8 @@ work_result work(const int argc, const char* const * const argv) try {
 		}
 
 		browse_servers_gui.close();
+		map_catalogue_gui.close();
+		settings_gui.close();
 
 		main_menu.reset();
 		current_setup.reset();
@@ -1043,12 +1190,16 @@ work_result work(const int argc, const char* const * const argv) try {
 			main_menu_gui = {};
 			
 			setup_launcher([&]() {
-				emplace_main_menu(lua, config.main_menu);
+				emplace_main_menu(lua, *official, config.main_menu);
 			});
+
+			map_catalogue_gui.request_rescan();
 		}
 	};
 
 	auto launch_client = [&](const bool ignore_nat_check) {
+		bool public_internet = false;
+
 		if (ignore_nat_check) {
 			LOG("Finished NAT traversal. Connecting immediately.");
 		}
@@ -1066,16 +1217,23 @@ work_result work(const int argc, const char* const * const argv) try {
 				}
 				else {
 					LOG("The chosen server is in the public internet. Connecting immediately.");
+					public_internet = true;
 				}
 			}
 			else {
 				LOG("The chosen server was not found in the browser list.");
+				public_internet = true;
 			}
 		}
 
 		setup_launcher([&]() {
-			const auto bound_port = get_bound_local_port();
+			auto bound_port = get_bound_local_port();
 			auxiliary_socket.reset();
+
+			if (public_internet) {
+				LOG("Connecting without a specific port requirement.");
+				bound_port = 0;
+			}
 
 			LOG("Starting client setup. Binding to a port: %x (%x was preferred)", bound_port, last_requested_local_port);
 
@@ -1098,6 +1256,7 @@ work_result work(const int argc, const char* const * const argv) try {
 		setup_launcher([&]() {
 			emplace_current_setup(
 				std::in_place_type_t<editor_setup>(),
+				config.editor,
 				*official,
 				std::forward<decltype(args)>(args)...
 			);
@@ -1107,6 +1266,19 @@ work_result work(const int argc, const char* const * const argv) try {
 	};
 
 	auto launch_setup = [&](const activity_type mode) {
+		if (mode != activity_type::TUTORIAL && !config.skip_tutorial) {
+			change_with_save(
+				[&](auto& cfg) {
+					cfg.skip_tutorial = true;
+				}
+			);
+		}
+
+		if (map_catalogue_gui.is_downloading()) {
+			LOG("Cannot launch %x. Download in progress.", augs::enum_to_string(mode));
+			return;
+		}
+
 		LOG("Launched mode: %x", augs::enum_to_string(mode));
 
 		switch (mode) {
@@ -1150,9 +1322,8 @@ work_result work(const int argc, const char* const * const argv) try {
 						*official,
 						start,
 						config.server,
-						config.server_solvable,
+						config.server_private,
 						config.client,
-						config.private_server,
 						std::nullopt,
 
 						make_server_nat_traversal_input(),
@@ -1207,8 +1378,25 @@ work_result work(const int argc, const char* const * const argv) try {
 				setup_launcher([&]() {
 					emplace_current_setup(std::in_place_type_t<test_scene_setup>(),
 						lua,
+						config.client.nickname,
+						*official,
 						config.test_scene,
-						config.get_input_recording_mode()
+						config.get_input_recording_mode(),
+						test_scene_type::SHOOTING_RANGE
+					);
+				});
+
+				break;
+
+			case activity_type::TUTORIAL:
+				setup_launcher([&]() {
+					emplace_current_setup(std::in_place_type_t<test_scene_setup>(),
+						lua,
+						config.client.nickname,
+						*official,
+						config.test_scene,
+						config.get_input_recording_mode(),
+						test_scene_type::TUTORIAL
 					);
 				});
 
@@ -1314,7 +1502,17 @@ work_result work(const int argc, const char* const * const argv) try {
 		return browse_servers_input {
 			config.server_list_provider,
 			config.client_start,
-			config.official_arena_servers
+			config.official_arena_servers,
+			config.faction_view
+		};
+	};
+
+	auto get_map_catalogue_input = [&]() {
+		return map_catalogue_input {
+			config.server.external_arena_files_provider,
+			streaming.ad_hoc.in_atlas,
+			streaming.necessary_images_in_atlas,
+			window
 		};
 	};
 
@@ -1323,6 +1521,25 @@ work_result work(const int argc, const char* const * const argv) try {
 
 		if (perform_result) {
 			start_client_setup();
+		}
+	};
+
+	auto perform_map_catalogue = [&]() {
+		const bool perform_result = map_catalogue_gui.perform(get_map_catalogue_input());
+
+		if (perform_result) {
+			change_with_save(
+				[&](auto& cfg) {
+					cfg.server.external_arena_files_provider = config.server.external_arena_files_provider;
+				}
+			);
+		}
+
+		if (map_catalogue_gui.open_host_server_window.has_value()) {
+			config.server.arena = *map_catalogue_gui.open_host_server_window;
+			start_server_gui.open();
+
+			map_catalogue_gui.open_host_server_window = std::nullopt;
 		}
 	};
 
@@ -1346,7 +1563,6 @@ work_result work(const int argc, const char* const * const argv) try {
 		const bool launched_from_server_start_gui = start_server_gui.perform(
 			config.server_start, 
 			config.server, 
-			config.server_solvable,
 			nat_detection.has_value() ? std::addressof(*nat_detection) : nullptr,
 			get_bound_local_port()
 		);
@@ -1359,7 +1575,6 @@ work_result work(const int argc, const char* const * const argv) try {
 					cfg.server_start = config.server_start;
 					cfg.client = config.client;
 					cfg.server = config.server;
-					cfg.server_solvable = config.server_solvable;
 				}
 			);
 
@@ -1367,7 +1582,10 @@ work_result work(const int argc, const char* const * const argv) try {
 				launch_setup(activity_type::SERVER);
 			}
 			else {
-				augs::spawn_detached_process(params.exe_path.string(), "--dedicated-server");
+				auxiliary_socket.reset();
+
+				augs::restart_application(argc, argv, params.exe_path.string(), { "--dedicated-server" });
+				config.client_start.displayed_connecting_server_name = "local dedicated server";
 				config.client_start.set_custom(typesafe_sprintf("%x:%x", config.server_start.ip, chosen_server_port()));
 
 				launch_setup(activity_type::CLIENT);
@@ -1398,7 +1616,9 @@ work_result work(const int argc, const char* const * const argv) try {
 			streaming.get_loaded_gui_fonts().gui,
 			necessary_sounds,
 			viewing_config.audio_volume,
-			background_setup != nullptr
+			background_setup != nullptr,
+			has_current_setup() && std::holds_alternative<editor_setup>(*current_setup),
+			is_during_tutorial()
 		};
 	};
 
@@ -1472,31 +1692,47 @@ work_result work(const int argc, const char* const * const argv) try {
 		return true;
 	};
 
-	auto get_camera_eye = [&]() {		
-		if(const auto custom = visit_current_setup(
-			[](const auto& setup) { 
-				return setup.find_current_camera_eye(); 
+	auto get_camera_eye = [&](const config_lua_table& viewing_config) {		
+		auto logic_eye = [&]() {
+			if(const auto custom = visit_current_setup(
+				[](const auto& setup) { 
+					return setup.find_current_camera_eye(); 
+				}
+			)) {
+				return *custom;
 			}
-		)) {
-			return *custom;
+			
+			if (get_viewed_character().dead()) {
+				return camera_eye();
+			}
+
+			return gameplay_camera.get_current_eye();
+		}();
+
+		if (viewing_config.drawing.auto_zoom) {
+			const float target_resolution_height = 1080;
+			const float screen_h = float(logic_get_screen_size().y);
+
+			if (screen_h != target_resolution_height) {
+				logic_eye.zoom *= screen_h / target_resolution_height;
+			}
 		}
-		
-		if (get_viewed_character().dead()) {
-			return camera_eye();
+		else if (viewing_config.drawing.custom_zoom != 1.0f) {
+			logic_eye.zoom *= std::max(1.0f, viewing_config.drawing.custom_zoom);
 		}
 
-		return gameplay_camera.get_current_eye();
+		return logic_eye;
 	};
 
-	auto get_camera_cone = [&]() {		
-		return camera_cone(get_camera_eye(), logic_get_screen_size());
+	auto get_camera_cone = [&](const config_lua_table& viewing_config) {		
+		return camera_cone(get_camera_eye(viewing_config), logic_get_screen_size());
 	};
 
-	auto get_queried_cone = [&](const config_lua_table& config) {		
-		const auto query_mult = config.session.camera_query_aabb_mult;
+	auto get_queried_cone = [&](const config_lua_table& viewing_config) {		
+		const auto query_mult = viewing_config.session.camera_query_aabb_mult;
 
 		const auto queried_cone = [&]() {
-			auto c = get_camera_cone();
+			auto c = get_camera_cone(viewing_config);
 			c.eye.zoom /= query_mult;
 			return c;
 		}();
@@ -1516,7 +1752,7 @@ work_result work(const int argc, const char* const * const argv) try {
 			setup.customize_for_viewing(config_copy);
 			setup.apply(config_copy);
 
-			if (get_camera_eye().zoom < 1.f) {
+			if (get_camera_eye(config_copy).zoom < 1.f) {
 				/* Force linear filtering when zooming out */
 				config_copy.renderer.default_filtering = augs::filtering_type::LINEAR;
 			}
@@ -1554,6 +1790,9 @@ work_result work(const int argc, const char* const * const argv) try {
 				d.nickname_characters_for_offscreen_indicators = 0;
 			}
 
+			if (!game_gui_mode_flag) {
+				config_copy.drawing.draw_inventory = false;
+			}
 
 			return config_copy;
 		});
@@ -1650,10 +1889,8 @@ work_result work(const int argc, const char* const * const argv) try {
 
 						auto playtest_vars = config.server;
 						playtest_vars.server_name = "${MY_NICKNAME} is creating " + setup.get_arena_name();
-
-						auto playtest_solvable_vars = config.server_solvable;
-						playtest_solvable_vars.playtesting_context = setup.make_playtesting_context();
-						playtest_solvable_vars.arena = setup.get_arena_name();
+						playtest_vars.playtesting_context = setup.make_playtesting_context();
+						playtest_vars.arena = setup.get_arena_name();
 
 						background_setup = std::move(current_setup);
 
@@ -1663,9 +1900,8 @@ work_result work(const int argc, const char* const * const argv) try {
 								*official,
 								start,
 								playtest_vars,
-								playtest_solvable_vars,
+								config.server_private,
 								config.client,
-								config.private_server,
 								std::nullopt,
 
 								make_server_nat_traversal_input(),
@@ -1748,12 +1984,12 @@ work_result work(const int argc, const char* const * const argv) try {
 
 				browse_servers_gui.advance_ping_logic();
 
-				{
-					const bool show_server_browser = !has_current_setup() || ingame_menu.show;
+				if (const bool show_server_browser = !has_current_setup() || ingame_menu.show) {
+					perform_browse_servers();
+				}
 
-					if (show_server_browser) {
-						perform_browse_servers();
-					}
+				if (const bool show_map_catalogue = !has_current_setup()) {
+					perform_map_catalogue();
 				}
 
 				if (!has_current_setup()) {
@@ -1814,12 +2050,7 @@ work_result work(const int argc, const char* const * const argv) try {
 	auto decide_on_cursor_clipping = [&](const bool in_direct_gameplay, const auto& cfg) {
 		get_write_buffer().should_clip_cursor = (
 			in_direct_gameplay
-			|| (
-				cfg.window.is_raw_mouse_input()
-#if TODO
-				&& !cfg.session.use_system_cursor_for_gui
-#endif
-			)
+			|| cfg.window.draws_own_cursor()
 		);
 	};
 
@@ -1912,6 +2143,7 @@ work_result work(const int argc, const char* const * const argv) try {
 	bool should_quit = false;
 
 	augs::event::state common_input_state;
+	common_input_state.mouse.pos = window.get_last_mouse_pos();
 
 	std::function<void()> request_quit;
 
@@ -1921,12 +2153,20 @@ work_result work(const int argc, const char* const * const argv) try {
 		using T = decltype(t);
 
 		switch (t) {
+			case T::JOIN_DISCORD:
+				augs::open_url("https://discord.com/invite/YC49E4G");
+				break;
+
+			case T::DOWNLOAD_MAPS:
+				map_catalogue_gui.open();
+				break;
+
 			case T::BROWSE_SERVERS:
 				browse_servers_gui.open();
 
 				break;
 
-			case T::CONNECT_TO_OFFICIAL_SERVER:
+			case T::PLAY_ON_THE_OFFICIAL_SERVER:
 				start_client_gui.open();
 
 				if (common_input_state[augs::event::keys::key::LSHIFT]) {
@@ -1962,6 +2202,10 @@ work_result work(const int argc, const char* const * const argv) try {
 				launch_setup(activity_type::SHOOTING_RANGE);
 				break;
 
+			case T::TUTORIAL:
+				launch_setup(activity_type::TUTORIAL);
+				break;
+
 			case T::EDITOR:
 				launch_setup(activity_type::EDITOR_PROJECT_SELECTOR);
 				break;
@@ -1970,9 +2214,11 @@ work_result work(const int argc, const char* const * const argv) try {
 				settings_gui.open();
 				break;
 
+#if 0
 			case T::CREATORS:
 				main_menu->launch_creators_screen();
 				break;
+#endif
 
 			case T::QUIT:
 				LOG("Quitting due to Quit pressed in main menu.");
@@ -1987,6 +2233,14 @@ work_result work(const int argc, const char* const * const argv) try {
 		using T = decltype(t);
 
 		switch (t) {
+			case T::SERVER_DETAILS:
+				if (is_during_tutorial()) {
+					std::get<test_scene_setup>(*current_setup).request_checkpoint_restart();
+					ingame_menu.show = false;
+				}
+
+				break;
+
 			case T::BROWSE_SERVERS:
 				browse_servers_gui.open();
 				break;
@@ -2000,7 +2254,12 @@ work_result work(const int argc, const char* const * const argv) try {
 					restore_background_setup();
 				}
 				else {
-					launch_setup(activity_type::MAIN_MENU);
+					if (has_current_setup() && std::holds_alternative<editor_setup>(*current_setup)) {
+						launch_setup(activity_type::EDITOR_PROJECT_SELECTOR);
+					}
+					else {
+						launch_setup(activity_type::MAIN_MENU);
+					}
 				}
 
 				break;
@@ -2030,8 +2289,8 @@ work_result work(const int argc, const char* const * const argv) try {
 
 	visible_entities all_visible;
 
-	auto get_character_camera = [&]() -> character_camera {
-		return { get_viewed_character(), { get_camera_eye(), logic_get_screen_size() } };
+	auto get_character_camera = [&](const config_lua_table& viewing_config) -> character_camera {
+		return { get_viewed_character(), { get_camera_eye(viewing_config), logic_get_screen_size() } };
 	};
 
 	auto reacquire_visible_entities = [&](
@@ -2041,7 +2300,7 @@ work_result work(const int argc, const char* const * const argv) try {
 	) {
 		auto scope = measure_scope(game_thread_performance.camera_visibility_query);
 
-		auto queried_eye = get_camera_eye();
+		auto queried_eye = get_camera_eye(viewing_config);
 		queried_eye.zoom /= viewing_config.session.camera_query_aabb_mult;
 
 		const auto queried_cone = camera_cone(queried_eye, screen_size);
@@ -2079,7 +2338,7 @@ work_result work(const int argc, const char* const * const argv) try {
 					entropy_accumulator::input {
 						input_cfg, 
 						logic_get_screen_size(), 
-						get_camera_eye().zoom 
+						get_camera_eye(viewing_config).zoom 
 					}
 				)) {
 					return vec2(motion->offset) * input_cfg.character.crosshair_sensitivity;
@@ -2197,7 +2456,7 @@ work_result work(const int argc, const char* const * const argv) try {
 			inv_tickrate,
 			get_interpolation_ratio(),
 
-			get_character_camera(),
+			get_character_camera(viewing_config),
 			get_queried_cone(viewing_config),
 			all_visible,
 
@@ -2240,7 +2499,7 @@ work_result work(const int argc, const char* const * const argv) try {
 				streaming.loaded_sounds,
 				viewing_config.audio_volume,
 				viewing_config.sound,
-				get_character_camera(),
+				get_character_camera(viewing_config),
 				viewing_config.performance,
 				viewing_config.damage_indication,
 				settings
@@ -2297,7 +2556,7 @@ work_result work(const int argc, const char* const * const argv) try {
 				[&viewing_config, &setup_post_cleanup](const const_logic_step& step) { setup_post_cleanup(viewing_config, step); }
 			);
 
-			const auto zoom = get_camera_eye().zoom;
+			const auto zoom = get_camera_eye(viewing_config).zoom;
 			const auto input_cfg = get_current_input_settings(viewing_config);
 
 			if constexpr(std::is_same_v<S, client_setup>) {
@@ -2397,7 +2656,12 @@ work_result work(const int argc, const char* const * const argv) try {
 	}
 	else {
 		if (config.launch_at_startup == launch_type::LAST_ACTIVITY) {
-			launch_setup(config.get_last_activity());
+			if (!config.skip_tutorial) {
+				launch_setup(activity_type::TUTORIAL);
+			}
+			else {
+				launch_setup(config.get_last_activity());
+			}
 		}
 		else {
 			launch_setup(activity_type::MAIN_MENU);
@@ -2423,14 +2687,24 @@ work_result work(const int argc, const char* const * const argv) try {
 		};
 	};
 
-	auto make_create_menu_context = [&](const config_lua_table& cfg) {
+	auto make_create_menu_context = [&](const config_lua_table& viewing_config) {
 		return [&](auto& gui) {
 			return gui.create_context(
 				logic_get_screen_size(),
 				common_input_state,
-				create_menu_context_deps(cfg)
+				create_menu_context_deps(viewing_config)
 			);
 		};
+	};
+
+	auto close_next_imgui_window = [&]() {
+		ImGuiContext& g = *GImGui;
+
+		if (g.WindowsFocusOrder.size() > 0) {
+			if (g.WindowsFocusOrder.back()) {
+				augs::imgui::next_window_to_close = g.WindowsFocusOrder.back()->ID; 
+			}
+		}
 	};
 
 	auto let_imgui_hijack_mouse = [&](auto&& create_game_gui_context, auto&& create_menu_context) {
@@ -2574,6 +2848,14 @@ work_result work(const int argc, const char* const * const argv) try {
 
 				concatenate(new_window_entropy, write_buffer.new_window_entropy);
 
+				on_specific_setup([&](editor_setup& editor) {
+					if (editor.warp_cursor_once) {
+						editor.warp_cursor_once = false;
+
+						common_input_state.mouse.pos = ImGui::GetIO().MousePos;
+					}
+				});
+
 				if (get_viewed_character().dead()) {
 					game_gui_mode = true;
 				}
@@ -2601,6 +2883,8 @@ work_result work(const int argc, const char* const * const argv) try {
 							if (config.content_regeneration.rescan_assets_on_window_focus) {
 								streaming.request_rescan();
 							}
+
+							map_catalogue_gui.request_rescan();
 						}
 
 						if (e.msg == message::deactivate) {
@@ -2739,6 +3023,9 @@ work_result work(const int argc, const char* const * const argv) try {
 
 							releases.set_all();
 						}
+						else {
+							close_next_imgui_window();
+						}
 
 						continue;
 					}
@@ -2762,11 +3049,6 @@ work_result work(const int argc, const char* const * const argv) try {
 					{
 						auto control_main_menu = [&]() {
 							if (has_main_menu() && !has_current_setup()) {
-								if (e.was_pressed(augs::event::keys::key::D)) {
-									launch_debugger(lua);
-									return true;
-								}
-
 								if (main_menu_gui.show) {
 									main_menu_gui.control(create_menu_context(main_menu_gui), e, do_main_menu_option);
 								}
@@ -2933,11 +3215,11 @@ work_result work(const int argc, const char* const * const argv) try {
 				);
 			};
 
-			auto finalize_loading_viewables = [&](const auto& new_viewing_config) {
+			auto finalize_loading_viewables = [&](const bool measure_atlas_uploading) {
 				streaming.finalize_load({
 					audio_buffers,
 					get_current_frame_num(),
-					new_viewing_config.debug.measure_atlas_uploading,
+					measure_atlas_uploading,
 					get_general_renderer(),
 					get_audiovisuals().get<sound_system>()
 				});
@@ -2966,7 +3248,7 @@ work_result work(const int argc, const char* const * const argv) try {
 						viewing_config.hotbar,
 						viewing_config.drawing,
 						viewing_config.inventory_gui_controls,
-						get_camera_eye(),
+						get_camera_eye(viewing_config),
 						get_drawer_for(chosen_renderer)
 					}
 				};
@@ -3001,7 +3283,7 @@ work_result work(const int argc, const char* const * const argv) try {
 						get_interpolation_ratio(),
 						get_drawer_for(chosen_renderer).default_texture,
 						new_viewing_config,
-						get_camera_cone()
+						get_camera_cone(new_viewing_config)
 					);
 				}
 			};
@@ -3019,7 +3301,7 @@ work_result work(const int argc, const char* const * const argv) try {
 			auto make_draw_setup_gui_input = [&](augs::renderer& chosen_renderer, const config_lua_table& new_viewing_config) {
 				return draw_setup_gui_input {
 					all_visible,
-					get_camera_cone(),
+					get_camera_cone(new_viewing_config),
 					get_blank_texture(),
 					new_viewing_config,
 					streaming.necessary_images_in_atlas,
@@ -3117,7 +3399,7 @@ work_result work(const int argc, const char* const * const argv) try {
 			};
 
 			auto draw_non_menu_cursor = [&](augs::renderer& chosen_renderer, const config_lua_table& viewing_config, const assets::necessary_image_id menu_chosen_cursor) {
-				const bool should_draw_our_cursor = viewing_config.window.is_raw_mouse_input() && !window.is_mouse_pos_paused();
+				const bool should_draw_our_cursor = viewing_config.window.draws_own_cursor() && !window.is_mouse_pos_paused();
 				const auto cursor_drawing_pos = common_input_state.mouse.pos;
 
 				auto get_drawer = [&]() {
@@ -3187,7 +3469,7 @@ work_result work(const int argc, const char* const * const argv) try {
 					});
 				}
 
-				auto cone = get_camera_cone();
+				auto cone = get_camera_cone(viewing_config);
 				cone.eye.transform.pos.discard_fract();
 
 				return illuminated_rendering_input {
@@ -3307,11 +3589,11 @@ work_result work(const int argc, const char* const * const argv) try {
 				game_gui_mode = true;
 			}
 
+			reload_needed_viewables();
+			finalize_loading_viewables(config.debug.measure_atlas_uploading);
+
 			const auto input_result = perform_input_pass();
 			const auto& new_viewing_config = input_result.viewing_config;
-
-			reload_needed_viewables();
-			finalize_loading_viewables(new_viewing_config);
 
 			auto audio_renderer = std::optional<augs::audio_renderer>();
 

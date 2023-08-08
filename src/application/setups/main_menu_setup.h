@@ -42,11 +42,13 @@ namespace sol {
 	class state;
 }
 
+struct packaged_official_content;
+
 class main_menu_setup : public default_setup_settings {
 	std::shared_future<std::string> latest_news;
-	vec2 latest_news_pos = { 0.f, 0.f };
+	vec2 latest_news_pos = { 1920.f, 0.f };
 
-	intercosm intro;
+	intercosm scene;
 	test_mode mode;
 	test_mode_ruleset ruleset;
 	entity_id viewed_character_id;
@@ -57,6 +59,8 @@ class main_menu_setup : public default_setup_settings {
 
 	augs::sound_source menu_theme_source;
 	std::optional<augs::single_sound_buffer> menu_theme;
+
+	augs::path_type current_arena_folder;
 
 #if TODO
 	bool draw_menu_gui = false;
@@ -73,7 +77,7 @@ class main_menu_setup : public default_setup_settings {
 public:
 	static constexpr auto loading_strategy = viewables_loading_type::LOAD_ALL;
 
-	main_menu_setup(sol::state&, const main_menu_settings);
+	main_menu_setup(sol::state&, const packaged_official_content&, const main_menu_settings);
 
 	void query_latest_news(const std::string& url);
 
@@ -82,7 +86,7 @@ public:
 	}
 
 	const auto& get_viewed_cosmos() const {
-		return intro.world;
+		return scene.world;
 	}
 
 	auto get_interpolation_ratio() const {
@@ -100,7 +104,7 @@ public:
 	}
 
 	const auto& get_viewable_defs() const {
-		return intro.viewables;
+		return scene.viewables;
 	}
 
 	auto perform_custom_imgui(perform_custom_imgui_input) {
@@ -125,7 +129,7 @@ public:
 		const setup_advance_input in,
 		const C& callbacks
 	) {
-		latest_news_pos.x += in.frame_delta.per_second(50.f);
+		latest_news_pos.x -= in.frame_delta.per_second(50.f);
 
 		timer.advance(in.frame_delta);
 
@@ -135,7 +139,7 @@ public:
 			mode_entropy entropy;
 
 			mode.advance(
-				{ ruleset, intro.world },
+				{ ruleset, scene.world },
 				entropy,
 				callbacks,
 				solve_settings()
@@ -165,7 +169,7 @@ public:
 	}
 
 	augs::path_type get_unofficial_content_dir() const {
-		return {};
+		return current_arena_folder;
 	}
 
 	auto get_render_layer_filter() const {
@@ -179,7 +183,7 @@ public:
 
 	template <class F>
 	void on_mode_with_input(F&& callback) const {
-		callback(mode, test_mode::const_input { ruleset, intro.world });
+		callback(mode, test_mode::const_input { ruleset, scene.world });
 	}
 
 	auto get_game_gui_subject_id() const {

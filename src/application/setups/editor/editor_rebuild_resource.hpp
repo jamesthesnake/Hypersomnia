@@ -40,7 +40,7 @@ void allocate_flavours_and_assets_for_resource(
 		resource.scene_flavour_id = typed_entity_flavour_id<entity_type>(flavour_pool.allocate().key);
 	}
 	else if constexpr(std::is_same_v<editor_area_marker_resource, R>) {
-		if (editable.type == area_marker_type::PORTAL) {
+		if (::is_portal_based(editable.type)) {
 
 		}
 		else {
@@ -63,6 +63,9 @@ void allocate_flavours_and_assets_for_resource(
 		ensure(false && "not implemented");
 	}
 	else if constexpr(std::is_same_v<editor_ammunition_resource, R>) {
+		ensure(false && "not implemented");
+	}
+	else if constexpr(std::is_same_v<editor_tool_resource, R>) {
 		ensure(false && "not implemented");
 	}
 	else if constexpr(std::is_same_v<editor_melee_resource, R>) {
@@ -281,6 +284,9 @@ void setup_scene_object_from_resource(
 	else if constexpr(std::is_same_v<editor_ammunition_resource, R>) {
 		ensure(false && "not implemented");
 	}
+	else if constexpr(std::is_same_v<editor_tool_resource, R>) {
+		ensure(false && "not implemented");
+	}
 	else if constexpr(std::is_same_v<editor_melee_resource, R>) {
 		ensure(false && "not implemented");
 	}
@@ -313,6 +319,10 @@ void setup_scene_object_from_resource(
 
 						return render_layer::FOREGROUND;
 					case editor_sprite_domain::PHYSICAL:
+						if (editable.as_physical.is_shoot_through) {
+							return render_layer::OBSTACLES_UNDER_MISSILES;
+						}
+
 						return render_layer::SOLID_OBSTACLES;
 
 					default:
@@ -323,7 +333,15 @@ void setup_scene_object_from_resource(
 
 			on_domain_specific([&](auto& specific) {
 				render.special_functions.set(special_render_function::ILLUMINATE_AS_WALL, specific.illuminate_like_wall);
-				render.special_functions.set(special_render_function::COVER_GROUND_NEONS, specific.cover_background_neons);
+
+				if (domain == editor_sprite_domain::FOREGROUND) {
+					render.special_functions.set(special_render_function::COVER_GROUND_NEONS, false);
+					render.special_functions.set(special_render_function::COVER_GROUND_NEONS_FOREGROUND, specific.cover_background_neons);
+				}
+				else {
+					render.special_functions.set(special_render_function::COVER_GROUND_NEONS, specific.cover_background_neons);
+					render.special_functions.set(special_render_function::COVER_GROUND_NEONS_FOREGROUND, false);
+				}
 			});
 		}
 
@@ -392,6 +410,15 @@ void setup_scene_object_from_resource(
 				fixtures->filter = filters[predefined_filter_type::WALL];
 			}
 
+			if (physical.is_walk_through) {
+				fixtures->filter.maskBits &= ~(1 << int(filter_category::CHARACTER));
+				fixtures->filter.maskBits &= ~(1 << int(filter_category::CHARACTER_WEAPON));
+
+				fixtures->filter.maskBits &= ~(1 << int(filter_category::WALL));
+				fixtures->filter.maskBits &= ~(1 << int(filter_category::LYING_ITEM));
+				fixtures->filter.maskBits &= ~(1 << int(filter_category::SHELL));
+			}
+
 			if (physical.is_throw_through) {
 				fixtures->filter.maskBits &= ~(1 << int(filter_category::FLYING_EXPLOSIVE));
 			}
@@ -455,7 +482,7 @@ void setup_per_node_flavour(
 	};
 
 	if constexpr(std::is_same_v<editor_area_marker_node, N>) {
-		if (resource.editable.type == area_marker_type::PORTAL) {
+		if (is_portal_based(resource.editable.type)) {
 			using entity_type = area_sensor;
 
 			auto& flavour_pool = common.flavours.get_for<entity_type>();
@@ -496,6 +523,10 @@ void setup_per_node_flavour(
 
 			if (auto rigid_body = scene.template find<invariants::rigid_body>()) {
 				rigid_body->body_type = rigid_body_type::ALWAYS_STATIC;
+			}
+
+			if (from.context_tip.is_enabled) {
+				scene.template get<invariants::text_details>().description = from.context_tip.value;
 			}
 		}
 	}

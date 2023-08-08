@@ -274,7 +274,7 @@ namespace augs {
 			auto dt = new_mouse_pos - platform->last_mouse_pos;
 			platform->last_mouse_pos = new_mouse_pos;
 
-			if (is_active() && (current_settings.is_raw_mouse_input() || mouse_pos_paused)) {
+			if (is_active() && (current_settings.draws_own_cursor() || mouse_pos_paused)) {
 				LOG_NVPS(dt.x, dt.y);
 				auto ch = do_raw_motion({
 					static_cast<short>(dt.x),
@@ -403,7 +403,8 @@ namespace augs {
 		glfwMakeContextCurrent(nullptr);
 	}
 
-	void window::set_cursor_pos(vec2i) {
+	void window::set_cursor_pos(const vec2i pos) {
+		last_mouse_pos = pos;
 	
 	}
 
@@ -471,7 +472,7 @@ namespace augs {
 	}
 
 	void window::set_cursor_visible_impl(bool) {
-
+		/* Implemented with GLFW_CURSOR_DISABLED */
 	}
 
 	bool window::set_cursor_clipping_impl(bool clip) {

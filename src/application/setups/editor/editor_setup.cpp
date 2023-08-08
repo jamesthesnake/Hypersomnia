@@ -133,87 +133,147 @@ packaged_official_content::packaged_official_content(sol::state& lua) {
 }
 
 editor_setup::editor_setup(
+	const editor_settings& settings,
 	const packaged_official_content& official,
 	const augs::path_type& project_path
-) : official(official), paths(project_path) {
+) : settings(settings), last_autosave_settings(settings.autosave), official(official), paths(project_path) {
 	create_official_filesystems();
 
 	LOG("Loading editor project at: %x", project_path);
 
-	constexpr bool strict = true;
+	constexpr bool convert_legacy_autosave = true;
 
-	try {
-		project = editor_project_readwrite::read_project_json(
-			paths.project_json,
-			official.resources,
-			official.resource_map,
-			strict
-		);
+	if (convert_legacy_autosave) {
+		if (augs::exists(paths.legacy_autosave_json)) {
+			if (augs::exists(paths.project_json)) {
+				std::filesystem::rename(paths.project_json, paths.last_saved_json);
+			}
 
-		/* Will be overwritten to the new name upon the first save. */
-		project.meta.name = paths.arena_name;
+			std::filesystem::rename(paths.legacy_autosave_json, paths.project_json);
+
+			simple_popup new_autosave_popup;
+
+			new_autosave_popup.title = "SUCCESS";
+			new_autosave_popup.warning_notice_above = "Converted legacy autosave.json filenames.";
+			new_autosave_popup.message = "No further action is required.";
+
+			autosave_popup = new_autosave_popup;
+		}
 	}
-	catch (const augs::json_deserialization_error& err) {
-		throw augs::json_deserialization_error("(%x):\n%x", paths.project_json.filename().string(), err.what());
-	}
 
-	history.mark_revision_as_saved();
+	auto try_read_saved_revision_from = [&](const auto& path) {
+		try {
+			project = editor_project_readwrite::read_project_json(
+				path,
+				official.resources,
+				official.resource_map
+			);
 
-	rescan_physical_filesystem();
+			/* Will be overwritten to the new name upon the first save. */
+			project.meta.name = paths.arena_name;
 
-	try {
-		auto autosaved_project = std::make_unique<editor_project>(editor_project_readwrite::read_project_json(
-			paths.autosave_json,
-			official.resources,
-			official.resource_map,
-			strict
-		));
+			history.mark_revision_as_saved();
 
-		autosaved_project->meta.name = paths.arena_name;
+			rescan_physical_filesystem();
 
-		simple_popup new_autosave_popup;
-		new_autosave_popup.title = "WARNING!";
+			return true;
+		}
+		catch (const augs::json_deserialization_error& err) {
+			throw augs::json_deserialization_error("(%x):\n%x", path.filename().string(), err.what());
+		}
+		catch (...) {
+			LOG("No %x file was found.", path.string());
+		}
 
-		replace_whole_project_command cmd;
-		cmd.after = std::move(autosaved_project);
-		cmd.before = std::make_unique<editor_project>(project);
-		cmd.built_description = std::string("Loaded autosave from ") + paths.autosave_json.filename().string();
+		return false;
+	};
 
-		new_autosave_popup.warning_notice_above = "Loaded an autosave file from " + paths.autosave_json.filename().string() + ".";
+	auto try_read_autosave_revision_from = [&](const auto& path) {
+		try {
+			auto autosaved_project = std::make_unique<editor_project>(editor_project_readwrite::read_project_json(
+				path,
+				official.resources,
+				official.resource_map
+			));
 
-		new_autosave_popup.message = "To go back to last saved changes instead,\npress Undo (CTRL+Z).\n\nIt is best practice to save your work (CTRL+S) before exiting the game.";
+			autosaved_project->meta.name = paths.arena_name;
 
-		autosave_popup = new_autosave_popup;
+			simple_popup new_autosave_popup;
+			new_autosave_popup.title = "WARNING";
 
-		post_new_command(std::move(cmd));
-		history.mark_revision_as_autosaved();
-		autosave_timer.reset();
+			replace_whole_project_command cmd;
+			cmd.after = std::move(autosaved_project);
+			cmd.before = std::make_unique<editor_project>(project);
+			cmd.built_description = std::string("Loaded autosave from ") + path.filename().string();
 
+			if (settings.autosave.if_loaded_autosave_show == editor_autosave_load_option::LAST_SAVED_VERSION) {
+				new_autosave_popup.warning_notice_above = "Autosaved changes are available in: " + path.filename().string();
+
+				new_autosave_popup.message = "You're now on the last saved version from: " + paths.last_saved_json.filename().string() + ".\n";
+				new_autosave_popup.message += "To load the autosave, press Redo (CTRL+SHIFT+Z).\n\nIt is best practice to save your work (CTRL+S) before exiting the game.";
+			}
+			else {
+				new_autosave_popup.warning_notice_above = "Loaded autosaved changes from " + path.filename().string() + ".";
+
+				new_autosave_popup.message = "To go back to last saved changes instead,\npress Undo (CTRL+Z).\n\nIt is best practice to save your work (CTRL+S) before exiting the game.";
+
+			}
+
+			if (!autosave_popup.has_value()) {
+				if (settings.autosave.alert_when_loaded_autosave) {
+					autosave_popup = new_autosave_popup;
+				}
+			}
+
+			post_new_command(std::move(cmd));
+			history.mark_revision_as_autosaved();
+			autosave_timer.reset();
+
+			/*
+				We need this so that the autosave file isn't removed 
+				when the user exits the editor on a saved revision without explicitly saving it.
+			*/
+
+			dirty_after_loading_autosave = true;
+			//recent_message.set("Loaded an autosave file.\nTo go back to last saved changes instead,\npress Undo (CTRL+Z).");
+			//recent_message.show_for_at_least_ms = 10000;
+
+			return true;
+		}
+		catch (const augs::json_deserialization_error& err) {
+			throw augs::json_deserialization_error("(%x):\n%x", path.filename().string(), err.what());
+		}
+		catch (...) {
+			LOG("No autosaved changes were found.");
+		}
+
+		return false;
+	};
+
+	auto do_on_project_assigned = [&]() {
 		/*
-			We need this so that the autosave file isn't removed 
-			when the user exits the editor on a saved revision without explicitly saving it.
-		*/
-
-		dirty_after_loading_autosave = true;
-		//recent_message.set("Loaded an autosave file.\nTo go back to last saved changes instead,\npress Undo (CTRL+Z).");
-		//recent_message.show_for_at_least_ms = 10000;
-	}
-	catch (const augs::json_deserialization_error& err) {
-		throw augs::json_deserialization_error("(%x):\n%x", paths.autosave_json.filename().string(), err.what());
-	}
-	catch (...) {
-		LOG("No autosave file was found.");
-
-		/*
-			This is otherwise already called by assign_project in replace_whole_project_command.
+			If we load autosave, this is already called in replace_whole_project_command (which calls assign_project).
 			If we don't load autosave, we need to manually call this for the current project.
 
 			Autosave will be triggered here if any redirects happen. That's not a bad thing,
-			because at this point no autosave exists.
+			because if we called this, it means no autosave exists.
 		*/
 
 		const bool undoing_to_first_revision = false;
 		on_project_assigned(undoing_to_first_revision);
+	};
+
+	if (try_read_saved_revision_from(paths.last_saved_json)) {
+		if (!try_read_autosave_revision_from(paths.project_json)) {
+			do_on_project_assigned();
+		}
+	}
+	else if (try_read_saved_revision_from(paths.project_json)) {
+		do_on_project_assigned();
+	}
+	else {
+		/* At least one of either project.json or last_saved.json must exist. */
+		throw augs::json_deserialization_error("Error: %x not found.", paths.project_json.string());
 	}
 
 	load_gui_state();
@@ -221,22 +281,26 @@ editor_setup::editor_setup(
 
 	rebuild_arena();
 	save_last_project_location();
+
+	if (settings.autosave.if_loaded_autosave_show == editor_autosave_load_option::LAST_SAVED_VERSION) {
+		undo();
+	}
 }
 
 editor_setup::~editor_setup() {
 	autosave_now_if_needed();
 
 	/*
-		Remove autosave only if we're at saved revision.
+		Restore last_saved.json to project.json only if we're at saved revision.
 
 		Note we're "dirty" if we've just loaded autosave and the user hasn't yet saved any revision to decide which one they want.
 		We're also "dirty" if we haven't saved after auto-redirecting pathed resources.
 
-		In these cases, autosave file will not be removed even if we're at a saved revision in history.
+		In these cases, last_saved.json will not be restored even if we're at a saved revision in history.
 	*/
 
 	if (everything_completely_saved()) {
-		remove_autosave_file();
+		restore_last_saved_json();
 	}
 
 	LOG("DTOR finished: ~editor_setup");
@@ -445,6 +509,15 @@ bool editor_setup::handle_input_before_game(
 				case key::R: rotate_selection_once_by(-90); return true;
 				case key::H: flip_selection_horizontally(); return true;
 				case key::V: flip_selection_vertically(); return true;
+				case key::T: 
+					if (!settings.warp_cursor_when_moving_nodes) {
+						warp_cursor_to_center(in.window);
+					}
+
+					start_moving_selection(); 
+
+					return true;
+
 				default: break;
 			}
 		}
@@ -460,7 +533,15 @@ bool editor_setup::handle_input_before_game(
 				case key::C: clone_selection(); return true;
 				case key::DEL: delete_selection(); return true;
 
-				case key::T: start_moving_selection(); return true;
+				case key::T: 
+					if (settings.warp_cursor_when_moving_nodes) {
+						warp_cursor_to_center(in.window);
+					}
+
+					start_moving_selection(); 
+
+					return true;
+
 				case key::E: start_resizing_selection(false); return true;
 				case key::R: start_rotating_selection(); return true;
 				case key::W: reset_rotation_of_selected_nodes(); return true;
@@ -599,6 +680,9 @@ void editor_setup::customize_for_viewing(config_lua_table& config) const {
 		get_arena_handle().adjust(config.drawing);
 	}
 	else {
+		config.drawing.auto_zoom = false;
+		config.drawing.custom_zoom = 1.0f;
+
 		config.drawing.draw_area_markers.is_enabled = false;
 		config.drawing.draw_aabb_highlighter = false;
 		config.interpolation.enabled = false;
@@ -789,7 +873,7 @@ void editor_setup::rescan_physical_filesystem() {
 			details += "\n\n";
 		}
 
-		ignored_popup.title = "Invalid filenames detected!";
+		ignored_popup.title = "Invalid filenames detected";
 		ignored_popup.message = summary;
 		ignored_popup.details = details;
 
@@ -1192,8 +1276,14 @@ void editor_setup::rescan_missing_pathed_resources(std::vector<augs::path_type>*
 	// LOG_NVPS(rebuilt_project.last_missing_resources.size(), rebuilt_project.last_unbacked_resources.size());
 }
 
-void editor_setup::remove_autosave_file() {
-	augs::remove_file(paths.autosave_json);
+void editor_setup::remove_last_saved_json() {
+	augs::remove_file(paths.last_saved_json);
+}
+
+void editor_setup::restore_last_saved_json() {
+	if (augs::exists(paths.last_saved_json)) {
+		std::filesystem::rename(paths.last_saved_json, paths.project_json);
+	}
 }
 
 void editor_setup::save() {
@@ -1207,13 +1297,17 @@ void editor_setup::save() {
 
 	recent_message.set("Saved the project to %x", paths.project_json.filename().string());
 
-	remove_autosave_file();
+	remove_last_saved_json();
 }
 
 void editor_setup::save_project_file_as(const augs::path_type& path) {
 	LOG("Saving project file as: %x", path);
 
 	project.meta.version_timestamp = augs::date_time::get_utc_timestamp();
+
+	if (project.about.author.empty()) {
+		project.about.author = std::string(simulated_client.nickname);
+	}
 
 	editor_project_readwrite::write_project_json(
 		path,
@@ -1257,9 +1351,22 @@ bool editor_setup::autosave_needed() const {
 }
 
 void editor_setup::force_autosave() {
-	save_project_file_as(paths.autosave_json);
+	bool just_backed_up_message = false;
 
-	recent_message.set("Autosaved current changes to: %x", paths.autosave_json.filename().string());
+	if (!augs::exists(paths.last_saved_json)) {
+		std::filesystem::rename(paths.project_json, paths.last_saved_json);
+		just_backed_up_message = true;
+	}
+
+	save_project_file_as(paths.project_json);
+
+	if (just_backed_up_message) {
+		recent_message.set("Autosaved current changes to: %x\nPrevious version backup at: %x", paths.project_json.filename().string(), paths.last_saved_json.filename().string());
+	}
+	else {
+		recent_message.set("Autosaved current changes to: %x", paths.project_json.filename().string());
+	}
+
 	history.mark_revision_as_autosaved();
 	autosave_timer.reset();
 }
@@ -1652,13 +1759,7 @@ const editor_layer* editor_setup::find_layer(const editor_layer_id& id) const {
 }
 
 editor_layer* editor_setup::find_layer(const std::string& name) {
-	for (auto& layer : project.layers.pool) {
-		if (layer.unique_name == name) {
-			return std::addressof(layer);
-		}
-	}
-
-	return nullptr;
+	return project.find_layer(name);
 }
 
 const editor_layer* editor_setup::find_layer(const std::string& name) const {
@@ -1680,20 +1781,8 @@ void editor_setup::start_renaming_selection() {
 	}
 }
 
-std::unordered_map<std::string, editor_node_id> editor_setup::make_name_to_node_map() const {
-	std::unordered_map<std::string, editor_node_id> result;
-
-	project.nodes.for_each(
-		[&](const auto& node_pool) {
-			auto register_node = [&]<typename T>(const auto id, const T& object) {
-				result[object.get_display_name()] = editor_typed_node_id<T> { id }.operator editor_node_id();
-			};
-
-			node_pool.for_each_id_and_object(register_node);
-		}
-	);
-
-	return result;
+name_to_node_map_type editor_setup::make_name_to_node_map() const {
+	return project.make_name_to_node_map();
 }
 
 std::unordered_map<std::string, editor_resource_id> editor_setup::make_name_to_internal_resource_map() const {
@@ -1906,18 +1995,7 @@ void editor_setup::scroll_once_to(inspected_variant id) {
 }
 
 editor_node_id editor_setup::to_node_id(entity_id id) const {
-	if (!id.is_set()) {
-		return {};
-	}
-
-	const auto& mapping = scene_entity_to_node[id.type_id.get_index()];
-	const auto node_index = id.raw.indirection_index;
-
-	if (node_index < mapping.size()) {
-		return mapping[node_index];
-	}
-
-	return {};
+	return ::entity_to_node_id(scene_entity_to_node, id);
 }
 
 augs::path_type editor_setup::get_unofficial_content_dir() const {
@@ -2258,7 +2336,7 @@ void editor_setup::draw_recent_message(const draw_setup_gui_input& in) {
 			|| try_preffix("Exported", green)
 			|| try_preffix("Written", green)
 			|| try_preffix("Saved the project", green)
-			|| try_preffix("Loaded an autosave file.", green)
+			|| try_preffix("Loaded autosaved changes.", green)
 			|| try_preffix("Saved", green)
 			|| try_preffix("Loaded", green)
 			|| try_preffix("Opened", green)
@@ -2548,11 +2626,11 @@ node_mover_input editor_setup::make_mover_input() {
 }
 
 setup_escape_result editor_setup::escape() {
-	if (arena_gui.escape()) {
-		return setup_escape_result::JUST_FETCH;
-	}
-
 	if (is_playtesting()) {
+		if (arena_gui.escape()) {
+			return setup_escape_result::JUST_FETCH;
+		}
+
 		stop_playtesting();
 		return setup_escape_result::JUST_FETCH;
 	}
@@ -3102,7 +3180,23 @@ void editor_setup::start_playtesting() {
 		return;
 	}
 
+	bool needs_rebuild = false;
+
 	if (project.settings.include_disabled_nodes) {
+		needs_rebuild = true;
+	}
+
+	if (auto mode = project.get_game_modes().find(project.playtesting.mode.raw)) {
+		if (mode->editable.common.activate_layers.size() > 0) {
+			needs_rebuild = true;
+		}
+
+		if (mode->editable.common.deactivate_layers.size() > 0) {
+			needs_rebuild = true;
+		}
+	}
+
+	if (needs_rebuild) {
 		rebuild_arena(false);
 	}
 
@@ -3178,6 +3272,7 @@ void editor_setup::warp_cursor_to_center(augs::window& window) {
 	const auto screen_center = window.get_screen_size() / 2;
 	ImGui::GetIO().MousePos = ImVec2(screen_center);
 	window.set_cursor_pos(screen_center);
+	warp_cursor_once = true;
 }
 
 bool editor_setup::can_resize_selected_nodes() const {
@@ -3464,6 +3559,7 @@ template struct edit_resource_command<editor_area_marker_resource>;
 
 template struct edit_resource_command<editor_firearm_resource>;
 template struct edit_resource_command<editor_ammunition_resource>;
+template struct edit_resource_command<editor_tool_resource>;
 template struct edit_resource_command<editor_melee_resource>;
 template struct edit_resource_command<editor_explosive_resource>;
 
@@ -3480,6 +3576,7 @@ template struct edit_node_command<editor_area_marker_node>;
 
 template struct edit_node_command<editor_firearm_node>;
 template struct edit_node_command<editor_ammunition_node>;
+template struct edit_node_command<editor_tool_node>;
 template struct edit_node_command<editor_melee_node>;
 template struct edit_node_command<editor_explosive_node>;
 
@@ -3495,6 +3592,7 @@ template struct create_node_command<editor_area_marker_node>;
 
 template struct create_node_command<editor_firearm_node>;
 template struct create_node_command<editor_ammunition_node>;
+template struct create_node_command<editor_tool_node>;
 template struct create_node_command<editor_melee_node>;
 template struct create_node_command<editor_explosive_node>;
 

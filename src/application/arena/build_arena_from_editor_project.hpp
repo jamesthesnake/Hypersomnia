@@ -30,6 +30,8 @@ void build_arena_from_editor_project(A arena_handle, const build_arena_input in)
 		}
 	}
 
+	const editor_mode_common* mode_common = nullptr;
+
 	auto rebuild_game_mode = [&]() {
 		using R = editor_game_mode_resource;
 
@@ -58,6 +60,8 @@ void build_arena_from_editor_project(A arena_handle, const build_arena_input in)
 		}();
 
 		if (const auto game_mode = pool.find(chosen_mode_id.raw)) {
+			mode_common = std::addressof(game_mode->editable.common);
+
 			const bool pass_playtesting_overrides = in.for_playtesting;
 			const editor_playtesting_settings* overrides = nullptr;
 
@@ -232,10 +236,24 @@ void build_arena_from_editor_project(A arena_handle, const build_arena_input in)
 			) {
 				typed_node.scene_entity_id.unset();
 
+				bool layer_active_in_mode = layer->is_active();
+
+				if (!in.editor_preview) {
+					if (mode_common) {
+						if (found_in(mode_common->activate_layers, layer_id)) {
+							layer_active_in_mode = true;
+						}
+
+						if (found_in(mode_common->deactivate_layers, layer_id)) {
+							layer_active_in_mode = false;
+						}
+					}
+				}
+
 				const bool force_active = !in.editor_preview && project.settings.include_disabled_nodes;
 
 				if (!force_active) {
-					if (!typed_node.active || !layer->is_active()) {
+					if (!typed_node.active || !layer_active_in_mode) {
 						return;
 					}
 				}
@@ -301,7 +319,7 @@ void build_arena_from_editor_project(A arena_handle, const build_arena_input in)
 						scene_flavour_id
 					);
 				}
-				else if constexpr(is_one_of_v<node_type, editor_melee_node, editor_explosive_node>) {
+				else if constexpr(is_one_of_v<node_type, editor_melee_node, editor_explosive_node, editor_tool_node>) {
 					std::visit(
 						[&](const auto& typed) {
 							requested_equipment r;

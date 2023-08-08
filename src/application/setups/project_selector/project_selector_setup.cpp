@@ -33,7 +33,23 @@
 #include "augs/templates/in_order_of.h"
 
 constexpr auto miniature_size_v = 80;
-constexpr auto preview_size_v = 250;
+constexpr auto preview_size_v = 400;
+
+std::string sanitize_arena_short_description(std::string in) {
+	int newlines = 0;
+
+	for (auto& c : in) {
+		if (c == '\n') {
+			++newlines;
+
+			if (newlines > 1) {
+				c = ' ';
+			}
+		}
+	}
+
+	return in;
+}
 
 static augs::path_type get_arenas_directory(const project_tab_type tab_type) {
 	switch (tab_type) {
@@ -99,7 +115,7 @@ static editor_project_about read_about_from(const augs::path_type& arena_folder_
 	return editor_project_readwrite::read_only_project_about(paths.project_json);
 }
 
-static editor_project_meta read_meta_from(const augs::path_type& arena_folder_path) {
+editor_project_meta read_meta_from(const augs::path_type& arena_folder_path) {
 	const auto paths = editor_project_paths(arena_folder_path);
 
 	return editor_project_readwrite::read_only_project_meta(paths.project_json);
@@ -266,6 +282,8 @@ bool projects_list_tab_state::perform_list(
 
 	const auto line_h = ImGui::GetTextLineHeight();
 
+	bool anything_chosen = false;
+
 	auto process_entry = [&](const auto& entry) {
 		const auto& path = entry.arena_path;
 		const auto arena_name = entry.get_arena_name();
@@ -289,7 +307,17 @@ bool projects_list_tab_state::perform_list(
 			});
 
 			if (ImGui::Selectable("##Entry", is_selected, ImGuiSelectableFlags_SpanAllColumns, selectable_size)) {
+			}
+
+			if (ImGui::IsItemClicked()) {
 				selected_arena_path = path;
+			}
+
+			if (!anything_chosen && ImGui::IsItemClicked()) {
+				if (ImGui::IsMouseDoubleClicked(0)) {
+					anything_chosen = true;
+					selected_arena_path = path;
+				}
 			}
 
 			if (ImGui::BeginPopupContextItem()) {
@@ -331,7 +359,7 @@ bool projects_list_tab_state::perform_list(
 		ImGui::SetCursorPosY(prev_y);
 		ImGui::SetCursorPosX(x);
 
-		text_disabled(entry.about.short_description);
+		text_disabled(sanitize_arena_short_description(entry.about.short_description));
 
 		ImGui::SetCursorPos(after_pos);
 
@@ -377,7 +405,7 @@ bool projects_list_tab_state::perform_list(
 		);
 	}
 
-	return false;
+	return anything_chosen;
 }
 
 
@@ -463,21 +491,15 @@ project_list_view_result projects_list_view::perform(const perform_custom_imgui_
 			auto scope = scoped_child("Project list view", ImVec2(proj_list_width, -space_for_clone_button));
 
 			if (const bool choice_performed = perform_arena_list()) {
-				auto& tab = tabs[current_tab];
-
 				const bool can_open_directly = current_tab == project_tab_type::MY_PROJECTS;
 				const bool needs_to_clone_before_open = !can_open_directly;
 
-				const auto& source_project_path = tab.selected_arena_path;
-
 				if (can_open_directly) {
-					const auto& target_project_path = source_project_path;
-
-					(void)target_project_path;
+					return project_list_view_result::OPEN_SELECTED_PROJECT;
 
 				}
 				else if (needs_to_clone_before_open) {
-
+					return project_list_view_result::OPEN_CREATE_FROM_SELECTED_DIALOG;
 				}
 			}
 		}
@@ -495,7 +517,6 @@ project_list_view_result projects_list_view::perform(const perform_custom_imgui_
 			if (selected_entry != nullptr) {
 				auto& entry = *selected_entry;
 				auto& about = entry.about;
-				(void)about;
 
 				const auto image_padding = vec2(5, 5);
 				const auto image_internal_padding = vec2i(15, 15);

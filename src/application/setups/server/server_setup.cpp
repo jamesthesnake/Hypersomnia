@@ -43,6 +43,9 @@
 
 #include "application/setups/server/server_json_events.h"
 #include "augs/readwrite/json_readwrite.h"
+#include "application/setups/editor/editor_paths.h"
+#include "game/modes/arena_mode.hpp"
+#include "game/messages/mode_notification.h"
 
 const auto only_connected_v = server_setup::for_each_flags {
 	server_setup::for_each_flag::ONLY_CONNECTED
@@ -60,9 +63,8 @@ server_setup::server_setup(
 	const packaged_official_content& official,
 	const augs::server_listen_input& in,
 	const server_vars& initial_vars,
-	const server_solvable_vars& initial_solvable_vars,
+	const server_private_vars& private_initial_vars,
 	const client_vars& integrated_client_vars,
-	const private_server_vars& private_initial_vars,
 	const std::optional<augs::dedicated_server_input> dedicated,
 	const server_nat_traversal_input& nat_traversal_input,
 	bool suppress_community_server_webhook_this_run
@@ -90,19 +92,16 @@ server_setup::server_setup(
 	nat_traversal(nat_traversal_input, resolved_server_list_addr),
 	suppress_community_server_webhook_this_run(suppress_community_server_webhook_this_run)
 {
-	const bool force = true;
-
 	{
 		auto initial_vars_modified = initial_vars;
 		auto source_server_name = std::string(initial_vars_modified.server_name);
 		str_ops(source_server_name).replace_all("${MY_NICKNAME}", std::string(integrated_client_vars.nickname));
 		initial_vars_modified.server_name = source_server_name;
 
-		apply(initial_vars_modified, force);
+		apply(initial_vars_modified, true);
 	}
 
-	apply(private_initial_vars, force);
-	apply(initial_solvable_vars, force);
+	apply(private_initial_vars);
 
 	if (private_initial_vars.master_rcon_password.empty()) {
 		LOG("WARNING! The master rcon password is empty! This means that only the localhost can access the master rcon.");
@@ -114,6 +113,7 @@ server_setup::server_setup(
 
 	if (dedicated == std::nullopt) {
 		integrated_client.init(server_time);
+		integrated_client.state = client_state_type::IN_GAME;
 		integrated_client.settings.chosen_nickname = integrated_client_vars.nickname;
 
 		if (!integrated_client_vars.avatar_image_path.empty()) {
@@ -160,6 +160,7 @@ server_setup::server_setup(
 	}
 
 	resolve_server_list();
+	refresh_runtime_info_for_rcon();
 }
 
 void server_setup::reset_afk_timer() {
@@ -287,6 +288,8 @@ void server_setup::default_server_post_solve(const const_logic_step step) {
 		const auto& summaries = step.get_queue<messages::match_summary_message>();
 
 		for (const auto& summary : summaries) {
+			request_immediate_heartbeat();
+
 			push_match_summary_webhook(summary);
 			log_match_end_json(summary);
 		}
@@ -296,6 +299,8 @@ void server_setup::default_server_post_solve(const const_logic_step step) {
 		const auto& ends = step.get_queue<messages::match_summary_ended>();
 
 		for (const auto& ended : ends) {
+			request_immediate_heartbeat();
+
 			if (ended.is_final) {
 				schedule_shutdown();
 			}
@@ -613,8 +618,13 @@ void server_setup::send_heartbeat_to_server_list() {
 	server_heartbeat heartbeat;
 
 	heartbeat.nat = nat_traversal.last_detected_nat;
-	heartbeat.server_name = vars.server_name;
-	heartbeat.current_arena = solvable_vars.arena;
+
+	if (!vars.allow_nat_traversal) {
+		heartbeat.nat.type = nat_type::PUBLIC_INTERNET;
+	}
+
+	heartbeat.server_name = get_server_name();
+	heartbeat.current_arena = get_current_arena_name();
 	heartbeat.game_mode = arena.on_mode_with_input(
 		[&](const auto& mode, const auto& input) {
 			return mode.get_name(input);
@@ -639,7 +649,37 @@ void server_setup::send_heartbeat_to_server_list() {
 	);
 
 	heartbeat.server_version = hypersomnia_version().get_version_string();
-	heartbeat.is_editor_playtesting_server = solvable_vars.playtesting_context.has_value();
+	heartbeat.is_editor_playtesting_server = vars.playtesting_context.has_value();
+
+	arena.on_mode_with_input(
+		[&heartbeat](const auto& mode, const auto&) {
+			auto fill = [&](const auto faction, auto& target) {
+				thread_local std::vector<server_heartbeat_player_info> players;
+				players.clear();
+
+				mode.for_each_player_in(
+					faction,
+					[&](const auto, const auto& player) {
+						auto converted = [](auto i) {
+							return static_cast<uint8_t>(std::clamp(i, 0, 255));
+						};
+
+						players.push_back({ player.get_nickname(), converted(player.stats.calc_score()), converted(player.stats.deaths) });
+					}
+				);
+
+				sort_range(players);
+				target.assign(players.begin(), players.begin() + std::min(players.size(), target.max_size()));
+			};
+
+			fill(faction_type::RESISTANCE, heartbeat.players_resistance);
+			fill(faction_type::METROPOLIS, heartbeat.players_metropolis);
+			fill(faction_type::SPECTATOR, heartbeat.players_spectating);
+
+			heartbeat.score_resistance = mode.get_faction_score(faction_type::RESISTANCE);
+			heartbeat.score_metropolis = mode.get_faction_score(faction_type::METROPOLIS);
+		}
+	);
 
 	heartbeat.validate();
 	heartbeat_buffer.clear();
@@ -875,7 +915,7 @@ std::string server_setup::find_client_nickname(const client_id_type& id) const {
 	get_arena_handle().on_mode(
 		[&](const auto& mode) {
 			if (const auto entry = mode.find(to_mode_player_id(id))) {
-				nickname = ": " + entry->get_chosen_name();
+				nickname = ": " + entry->get_nickname();
 			}
 		}
 	);
@@ -911,102 +951,98 @@ void server_setup::customize_for_viewing(config_lua_table& config) const {
 	}
 }
 
-void server_setup::apply(const private_server_vars& private_new_vars, const bool force) {
+void server_setup::apply(const server_private_vars& private_new_vars) {
 	const auto old_vars = private_vars;
 	private_vars = private_new_vars;
-
-	(void)force;
 }
 
-void server_setup::apply(const server_vars& new_vars, const bool force) {
-	/* 
-		Note these settings will be forced when applied through rcon. 
-	*/
+server_public_vars server_setup::make_public_vars() const {
+	server_public_vars pub;
 
-	const bool any_difference = 
-		force || 
-		new_vars != vars
-	;
+	pub.arena = vars.arena;
+	pub.game_mode = vars.game_mode;
 
-	const auto old_vars = vars;
+	pub.required_arena_hash = current_arena_hash;
+	pub.playtesting_context = vars.playtesting_context;
+
+	const bool is_user_project = ::begins_with(current_arena_folder.string(), EDITOR_PROJECTS_DIR.string());
+
+	if (is_user_project) {
+		pub.external_arena_files_provider.clear();
+	}
+	else {
+		pub.external_arena_files_provider = vars.external_arena_files_provider;
+	}
+
+	return pub;
+}
+
+void server_setup::apply(const server_vars& new_vars, const bool first_time) {
+	if (!first_time) {
+		if (new_vars == vars) {
+			return;
+		}
+	}
+
+	const auto previous_arena = vars.arena;
+
+	const bool reload_arena = first_time || vars.arena != new_vars.arena || vars.game_mode != new_vars.game_mode;
+	const bool reload_net_sim = first_time || vars.network_simulator != new_vars.network_simulator;
+
 	vars = new_vars;
 
-	{
-		auto& rcon_gui = integrated_client_gui.rcon;
-		rcon_gui.on_arrived(new_vars);
-	}
+	if (reload_arena) {
+		try {
+			rechoose_arena();
+		}
+		catch (const augs::json_deserialization_error& err) {
+			LOG("Failed to load \"%x\":\n%x. Keepign the current arena.", vars.arena, err.what());
 
-	if (any_difference) {
-		auto broadcast_new_vars_to_rcons = [&](const auto recipient_id, auto&) {
-			const auto rcon_level = get_rcon_level(recipient_id);
+			vars.arena = previous_arena;
+			rechoose_arena();
+		}
+		catch (const augs::file_open_error& err) {
+			LOG("Arena named \"%x\" was not found on the server! Keeping the current arena.", new_vars.arena);
 
-			if (rcon_level >= rcon_level_type::BASIC) {
-				server->send_payload(
-					recipient_id,
-					game_channel_type::SERVER_SOLVABLE_AND_STEPS,
+			vars.arena = previous_arena;
+			rechoose_arena();
+		}
+		catch (...) {
+			LOG("Failed to load \"%x\":\nUnknown error. Keeping the current arena.", vars.arena);
 
-					new_vars
-				);
-			}
-		};
-
-		for_each_id_and_client(broadcast_new_vars_to_rcons, only_connected_v);
-
-		if (force || old_vars.network_simulator != new_vars.network_simulator) {
-			server->set(new_vars.network_simulator);
+			vars.arena = previous_arena;
+			rechoose_arena();
 		}
 	}
-}
-
-void server_setup::apply(const server_solvable_vars& new_vars, const bool force) {
-	/* 
-		Note these settings will be forced when applied through rcon. 
-	*/
-
-	const bool any_difference = 
-		force || 
-		new_vars != solvable_vars
-	;
-
-	const auto old_vars = solvable_vars;
-	solvable_vars = new_vars;
 
 	{
 		auto& rcon_gui = integrated_client_gui.rcon;
-		rcon_gui.on_arrived(new_vars);
-		LOG("Set on arrived");
+		rcon_gui.on_arrived(vars);
 	}
 
-	if (any_difference) {
-		if (force || old_vars.arena != new_vars.arena || old_vars.game_mode != new_vars.game_mode) {
-			try {
-				choose_arena(new_vars.arena);
-			}
-			catch (const augs::json_deserialization_error& err) {
-				LOG("Failed to load \"%x\":\n%x.", new_vars.arena, err.what());
+	if (reload_net_sim) {
+		server->set(vars.network_simulator);
+	}
 
-				const auto test_scene_arena = "";
-				choose_arena(test_scene_arena);
-			}
-			catch (const augs::file_open_error& err) {
-				/* 
-					TODO!!! 
-					In case of loading errors, we should update the config to the previously working map (or empty string). 
-					We should also remove this line: "vars = cfg.server;" since it will update the arena name despite not having it loaded.
-				*/
+	auto broadcast_new_vars_to_rcons = [&](const auto recipient_id, auto&) {
+		const auto rcon_level = get_rcon_level(recipient_id);
 
-				/* This should never really happen as we'll always check before allowing admin to set a map name. */
+		if (rcon_level >= rcon_level_type::BASIC) {
+			server->send_payload(
+				recipient_id,
+				game_channel_type::RELIABLE_MESSAGES,
 
-				LOG("Arena named \"%x\" was not found on the server!\nLoading the default arena instead.", new_vars.arena);
-
-				const auto test_scene_arena = "";
-				choose_arena(test_scene_arena);
-			}
-			catch (...) {
-				const auto test_scene_arena = "";
-				choose_arena(test_scene_arena);
-			}
+				vars
+			);
 		}
+	};
+
+	for_each_id_and_client(broadcast_new_vars_to_rcons, only_connected_v);
+
+	const auto new_public_vars = make_public_vars();
+
+	if (first_time || last_broadcast_public_vars != new_public_vars) {
+		last_broadcast_public_vars = new_public_vars;
 
 		auto broadcast_new_vars = [&](const auto recipient_id, const auto& c) {
 			if (c.should_pause_solvable_stream()) {
@@ -1015,9 +1051,9 @@ void server_setup::apply(const server_solvable_vars& new_vars, const bool force)
 
 			server->send_payload(
 				recipient_id,
-				game_channel_type::SERVER_SOLVABLE_AND_STEPS,
+				game_channel_type::RELIABLE_MESSAGES,
 
-				solvable_vars
+				new_public_vars
 			);
 		};
 
@@ -1027,13 +1063,11 @@ void server_setup::apply(const server_solvable_vars& new_vars, const bool force)
 
 void server_setup::apply(const config_lua_table& cfg) {
 	/* 
-		If we just apply the changes from game settings,
+		If we just applied the changes from game settings,
 		RCON would not work on the integrated server and it would be confusing.
 	*/
 
-	/* const bool force = false; */
-	/* apply(cfg.server, force); */
-	/* apply(cfg.server_solvable, force); */
+	/* apply(cfg.server); */
 
 	integrated_client_vars = cfg.client;
 
@@ -1063,36 +1097,38 @@ void register_external_resources_of(
 			if constexpr(is_pathed_resource_v<R>) {
 				for (auto& resource : pool) {
 					const auto& file = resource.external_file;
-					database[augs::to_secure_hash_byte_format(file.file_hash)] = arena_folder_path / file.path_in_project;
+					database[augs::to_secure_hash_byte_format(file.file_hash)] = { arena_folder_path / file.path_in_project, {} };
 				}
 			}
 		}
 	);
 }
 
-void server_setup::choose_arena(const std::string& name) {
-	LOG("Choosing arena: %x", name);
+void server_setup::rechoose_arena() {
+	LOG("Choosing arena: %x", vars.arena);
 
 	const auto& arena = get_arena_handle();
 
 	{
 		const auto result = ::choose_arena_server({
+			editor_project_readwrite::reading_settings(),
 			lua,
 			arena,
 			official,
-			name,
-			solvable_vars.game_mode,
+			vars.arena,
+			vars.game_mode,
 			clean_round_state,
-			solvable_vars.playtesting_context,
-			std::addressof(*last_loaded_project)
+			vars.playtesting_context,
+			std::addressof(*last_loaded_project),
+			nullptr
 		});
 
-		solvable_vars.arena = name;
-		solvable_vars.required_arena_hash = result.required_hash;
 		current_arena_folder = result.arena_folder_path;
+		const auto paths = editor_project_paths(current_arena_folder);
 
-		const auto arena_json_hash = result.required_hash;
-		LOG("Chosen arena hash: %x", augs::to_hex_format(arena_json_hash));
+		current_arena_hash = result.loaded_arena_hash;
+			
+		LOG("Chosen arena hash: %x", current_arena_hash);
 
 		::register_external_resources_of(
 			*last_loaded_project,
@@ -1100,27 +1136,7 @@ void server_setup::choose_arena(const std::string& name) {
 			arena_files_database
 		);
 
-		const auto paths = editor_project_paths(current_arena_folder);
-
-		if (augs::exists(paths.autosave_json)) {
-			LOG("Arena was loaded from the autosave.");
-
-			/* 
-				Properly point to the autosave file if it was the one to be loaded.
-				Otherwise the client would receive the wrong file.
-
-				Note even though we might have loaded an autosave file,
-				The client will always download the arena file as project_name.json.
-
-				The server does not control how filenames are being set on the client
-				(except for external resources in the json file).
-		   	*/
-
-			arena_files_database[arena_json_hash] = paths.autosave_json;
-		}
-		else {
-			arena_files_database[arena_json_hash] = paths.project_json;
-		}
+		arena_files_database[current_arena_hash] = { paths.project_json, {} };
 	}
 
 	arena_gui.reset();
@@ -1134,7 +1150,7 @@ void server_setup::choose_arena(const std::string& name) {
 		if (!player_added_to_mode(admin_id)) {
 			mode_entropy_general cmd;
 
-			const auto& playtesting_context = solvable_vars.playtesting_context;
+			const auto& playtesting_context = vars.playtesting_context;
 			auto admin_faction = faction_type::SPECTATOR;
 
 			if (playtesting_context) {
@@ -1204,7 +1220,7 @@ void server_setup::send_full_arena_snapshot_to(const client_id_type client_id) {
 
 	server->send_payload(
 		client_id, 
-		game_channel_type::SERVER_SOLVABLE_AND_STEPS, 
+		game_channel_type::RELIABLE_MESSAGES, 
 
 		buffers,
 
@@ -1221,11 +1237,15 @@ void server_setup::send_full_arena_snapshot_to(const client_id_type client_id) {
 }
 
 void server_setup::send_complete_solvable_state_to(const client_id_type client_id) {
+	/*
+		Three things: server public vars, client public settings, and the full state snapshot.
+	*/
+
 	server->send_payload(
 		client_id, 
-		game_channel_type::SERVER_SOLVABLE_AND_STEPS, 
+		game_channel_type::RELIABLE_MESSAGES, 
 
-		solvable_vars
+		last_broadcast_public_vars
 	);
 
 	send_full_arena_snapshot_to(client_id);
@@ -1235,7 +1255,7 @@ void server_setup::send_complete_solvable_state_to(const client_id_type client_i
 
 		server->send_payload(
 			recipient_client_id,
-			game_channel_type::SERVER_SOLVABLE_AND_STEPS,
+			game_channel_type::RELIABLE_MESSAGES,
 
 			downloaded_settings
 		);
@@ -1401,7 +1421,7 @@ void server_setup::advance_clients_state() {
 					if (session_id_of_avatar) {
 						server->send_payload(
 							recipient_client_id,
-							game_channel_type::SERVER_SOLVABLE_AND_STEPS,
+							game_channel_type::RELIABLE_MESSAGES,
 
 							*session_id_of_avatar,
 							cc.meta.avatar
@@ -1417,9 +1437,16 @@ void server_setup::advance_clients_state() {
 			if (rcon_level >= rcon_level_type::BASIC) {
 				server->send_payload(
 					client_id, 
-					game_channel_type::SERVER_SOLVABLE_AND_STEPS, 
+					game_channel_type::RELIABLE_MESSAGES, 
 
 					vars
+				);
+
+				server->send_payload(
+					client_id, 
+					game_channel_type::RELIABLE_MESSAGES, 
+
+					runtime_info
 				);
 			}
 		};
@@ -1459,7 +1486,7 @@ void server_setup::advance_clients_state() {
 
 #if 0
 		else if (c.state == S::RECEIVING_INITIAL_SNAPSHOT_CORRECTION) {
-			if (!server->has_messages_to_send(client_id, game_channel_type::SERVER_SOLVABLE_AND_STEPS)) {
+			if (!server->has_messages_to_send(client_id, game_channel_type::RELIABLE_MESSAGES)) {
 				c.set_in_game(server_time);
 			}
 
@@ -1469,6 +1496,11 @@ void server_setup::advance_clients_state() {
 			contribute_to_step_entropy();
 		}
 	};
+
+	/* 
+		Default means it will be iterated over all clients, even disconnected ones, 
+		to the exception of the integrated client.
+	*/
 
 	for_each_id_and_client(process_client);
 
@@ -1480,7 +1512,7 @@ void server_setup::advance_clients_state() {
 void server_setup::broadcast_shutdown_message() {
 	server_broadcasted_chat message;
 	message.target = chat_target_type::SERVER_SHUTTING_DOWN;
-	message.recipient_shall_kindly_leave = true;
+	message.recipient_effect = recipient_effect_type::DISCONNECT;
 
 	broadcast(message);
 
@@ -1502,6 +1534,7 @@ void server_setup::schedule_shutdown() {
 
 template <class P>
 message_handler_result server_setup::handle_rcon_payload(
+	const rcon_level_type level,
 	const P& typed_payload
 ) {
 	using namespace rcon_commands;
@@ -1514,6 +1547,18 @@ message_handler_result server_setup::handle_rcon_payload(
 		return continue_v;
 	}
 	else if constexpr(std::is_same_v<P, special>) {
+		if (level == rcon_level_type::BASIC) {
+			if (typed_payload != special::REQUEST_RUNTIME_INFO) {
+				/* 
+					Basic RCON can only ask REQUEST_RUNTIME_INFO.
+					The other tasks are administrative.
+				*/
+
+				LOG("Unauthorized RCON usage.");
+				return abort_v;
+			}
+		}
+
 		switch (typed_payload) {
 			case special::SHUTDOWN: {
 				LOG("Shutting down due to rcon's request.");
@@ -1531,6 +1576,11 @@ message_handler_result server_setup::handle_rcon_payload(
 				return continue_v;
 			}
 
+			case special::REQUEST_RUNTIME_INFO: 
+				refresh_runtime_info_for_rcon();
+
+				return continue_v;
+
 			default:
 				LOG("Unsupported rcon command.");
 				return continue_v;
@@ -1539,14 +1589,7 @@ message_handler_result server_setup::handle_rcon_payload(
 	else if constexpr(std::is_same_v<P, server_vars>) {
 		LOG("New server vars from the client.");
 
-		apply(typed_payload, true);
-
-		return continue_v;
-	}
-	else if constexpr(std::is_same_v<P, server_solvable_vars>) {
-		LOG("New server solvable vars from the client (%x).", typed_payload.arena);
-
-		apply(typed_payload, true);
+		apply(typed_payload);
 
 		return continue_v;
 	}
@@ -1597,7 +1640,7 @@ void server_setup::rebroadcast_public_settings() {
 
 			server->send_payload(
 				recipient_client_id, 
-				game_channel_type::SERVER_SOLVABLE_AND_STEPS,
+				game_channel_type::RELIABLE_MESSAGES,
 
 				broadcasted_update
 			);
@@ -1615,25 +1658,41 @@ void server_setup::broadcast_net_statistics() {
 	if (interval > 0 && server_time - when_last_sent_net_statistics > std::max(interval, 0.5f)) {
 		net_statistics_update update;
 
-		auto gather_stats = [&](const auto client_id, const auto& c) {
-			if (c.state != client_state_type::IN_GAME) {
-				return;
-			}
+		auto clamped = [](const auto value) {
+			return static_cast<uint8_t>(std::clamp(value, 1, 255));
+		};
 
-			const auto max_ping = std::numeric_limits<uint8_t>::max();
-			const auto clamped_ping = [&]() {
+		auto reread_stats = [&](const auto client_id, auto& c) {
+			const auto clamped_ping = [&]() -> uint8_t {
 				if (to_mode_player_id(client_id) == get_local_player_id()) {
 					return 0;
 				}
 
 				const auto info = server->get_network_info(client_id);
 				const auto rounded_ping = static_cast<int>(std::round(info.rtt_ms));
-				return std::clamp(rounded_ping, 1, int(max_ping));
+				return clamped(rounded_ping);
 			}();
 
-			last_player_metas[client_id].stats.ping = clamped_ping;
+			c.meta.stats.ping = clamped_ping;
 
-			update.ping_values.push_back(static_cast<uint8_t>(clamped_ping));
+			if (c.downloading_status == downloading_type::NONE) {
+				/* Set to 100% */
+				c.meta.stats.download_progress = 255;
+			}
+
+			integrated_player_metas[client_id].stats = c.meta.stats;
+		};
+
+		auto fill_update = [&](const auto, const auto& c) {
+			const auto ping = static_cast<uint8_t>(c.meta.stats.ping);
+			const auto progress = c.meta.stats.download_progress;
+
+			const auto entry = net_statistics_entry {
+				ping,
+				progress
+			};
+
+			update.stats.push_back(entry);
 		};
 
 		auto send_stats = [&](const auto client_id, const auto& c) {
@@ -1654,7 +1713,9 @@ void server_setup::broadcast_net_statistics() {
 			);
 		};
 
-		for_each_id_and_client(gather_stats, connected_and_integrated_v);
+		for_each_id_and_client(reread_stats, connected_and_integrated_v);
+		for_each_id_and_client(fill_update, connected_and_integrated_v);
+
 		for_each_id_and_client(send_stats, only_connected_v);
 
 		when_last_sent_net_statistics = server_time;
@@ -1700,7 +1761,7 @@ void server_setup::send_server_step_entropies(const compact_server_step_entropy&
 #if CONTEXTS_SEPARATE
 				server->send_payload(
 					client_id, 
-					game_channel_type::SERVER_SOLVABLE_AND_STEPS,
+					game_channel_type::RELIABLE_MESSAGES,
 
 					context
 				);
@@ -1716,7 +1777,7 @@ void server_setup::send_server_step_entropies(const compact_server_step_entropy&
 		/* TODO PERFORMANCE: only serialize the message once and multicast the same buffer to all clients! */
 		server->send_payload(
 			client_id,
-			game_channel_type::SERVER_SOLVABLE_AND_STEPS,
+			game_channel_type::RELIABLE_MESSAGES,
 
 			total
 		);
@@ -1733,68 +1794,122 @@ void server_setup::reinfer_if_necessary_for(const compact_server_step_entropy& e
 	}
 }
 
-void server_setup::send_packets_to_clients_downloading_files() {
-	const auto target_bandwidth = vars.max_file_bandwidth * 1024 * 1024;
-	const auto max_packets_at_a_time = 10; // 10k at a time can be sent, so to achieve max bandwidth, just 200 fps on a server is enough.
-
-	/* 
-		Afaik just one fragment is sent per packet, 
-		even if max packet size would allow for more.
-	*/
-
-	const auto packets_per_second = float(target_bandwidth) / block_fragment_size_v;
-
-	if (packets_per_second == 0.0f) {
+void server_setup::clean_unused_cached_files() {
+	if (opened_arena_files.empty()) {
 		return;
 	}
 
-	auto packet_interval = 1.0f / packets_per_second;
+	cached_currently_downloaded_files.clear();
 
-	const auto current_time = get_current_time();
+	auto gather_downloaded = [&](const auto, auto& c) {
+		if (c.now_downloading_file.has_value()) {
+			cached_currently_downloaded_files.emplace(*c.now_downloading_file);
+		}
+	};
 
-	auto max_times_sent = 0;
+	for_each_id_and_client(gather_downloaded, connected_and_integrated_v);
+
+	erase_if(
+		opened_arena_files,
+		[&](const auto& opened) {
+			if (!found_in(cached_currently_downloaded_files, opened)) {
+				arena_files_database[opened].free_opened_file();
+
+				return true;
+			}
+
+			return false;
+		}
+	);
+}
+
+bool server_setup::send_file_chunk(const client_id_type client_id, const arena_files_database_entry& entry, const file_chunk_index_type chunk_index) {
+	const auto& c = clients[client_id];
+
+	const auto& bytes = entry.cached_file;
+	const auto bytes_n = bytes.size();
+
+	auto num_all_chunks = bytes_n / file_chunk_size_v;
+
+	if (bytes_n % file_chunk_size_v != 0) {
+		++num_all_chunks;
+	}
+
+	if (bytes_n == 0) {
+		num_all_chunks = 1;
+	}
+
+	file_chunk_packet packet;
+	packet.index = chunk_index;
+	packet.file_hash = *c.now_downloading_file;
+
+	const auto last_chunk_index = num_all_chunks - 1;
+
+	if (chunk_index <= last_chunk_index) {
+		const bool is_last_chunk = chunk_index == last_chunk_index;
+
+		const auto bytes_start = 							std::size_t(chunk_index) * file_chunk_size_v;
+		const auto bytes_end   = is_last_chunk ? bytes_n : (std::size_t(bytes_start) + file_chunk_size_v);
+
+		ensure(bytes_end <= bytes_n);
+
+		const auto bytes_copied = bytes_end - bytes_start;
+
+		if (bytes_copied != 0) {
+			std::memcpy(packet.chunk_bytes.data(), bytes.data() + bytes_start, bytes_copied);
+		}
+
+		if (auto s = find_underlying_socket()) {
+			auto address = to_netcode_addr(server->get_client_address(client_id));
+
+			const auto num_packet_bytes = sizeof(packet);
+			// LOG("sending chunk %x to %x (%x bytes). CMD: %x", chunk_index, ::ToString(address), num_packet_bytes, packet.command);
+			auto socket = *s;
+			netcode_socket_send_packet(&socket, &address, reinterpret_cast<void*>(&packet), num_packet_bytes);
+
+			return true;
+		}
+	}
+
+	return false;
+}
+
+file_chunk_index_type server_setup::calc_num_chunks_per_tick_per_downloader() const {
+	const auto target_bandwidth = vars.max_direct_file_bandwidth * 1024 * 1024;
+	const auto target_bandwidth_per_tick = target_bandwidth * get_inv_tickrate();
+
+	const auto chunks_per_tick = target_bandwidth_per_tick / file_chunk_size_v;
+
 	int num_downloaders = 0;
 
 	for_each_id_and_client([&num_downloaders](const auto, auto& c){
-		if (c.is_downloading_files) {
+		if (c.downloading_status == downloading_type::DIRECTLY) {
 			++num_downloaders;
 		}
 	}, connected_and_integrated_v);
 
 	if (num_downloaders == 0) {
-		return;
+		return 0;
 	}
 
-	packet_interval *= num_downloaders;
+	const auto chunks_per_tick_per_downloader = std::max(uint32_t(1), uint32_t(chunks_per_tick / num_downloaders));
 
-	auto send_packets = [&](const auto, auto& c) {
-		if (c.is_downloading_files) {
-			int times_sent = 0;
+	return file_chunk_index_type(chunks_per_tick_per_downloader);
+}
 
-			while (c.when_last_sent_file_packet <= current_time && times_sent < max_packets_at_a_time) {
-				c.when_last_sent_file_packet += packet_interval;
+void server_setup::refresh_available_direct_download_bandwidths() {
+	const auto num_chunks = calc_num_chunks_per_tick_per_downloader();
 
-#if 0
-				server->send_packets_to(client_id);
-				server->receive_packets_from(client_id);
-#endif
-				++times_sent;
-			}
-
-			max_times_sent = std::max(times_sent, max_times_sent);
-
-			if (c.when_last_sent_file_packet < current_time) {
-				c.when_last_sent_file_packet = current_time;
-			}
+	auto refresh_chunks = [&](const auto, auto& c) {
+		if (c.downloading_status == downloading_type::DIRECTLY) {
+			c.direct_file_chunks_left = num_chunks;
+		}
+		else {
+			c.direct_file_chunks_left = 0;
 		}
 	};
 
-	for_each_id_and_client(send_packets, connected_and_integrated_v);
-
-	for (int i = 0; i < max_times_sent; ++i) {
-		server->send_packets();
-		handle_client_messages();
-	}
+	for_each_id_and_client(refresh_chunks, connected_and_integrated_v);
 }
 
 void server_setup::send_packets_if_its_time() {
@@ -1868,7 +1983,7 @@ custom_imgui_result server_setup::perform_custom_imgui(const perform_custom_imgu
 
 			if (!arena_gui.scoreboard.show && rcon_gui.show) {
 				auto on_new_payload = [&](const auto& new_payload) {
-					handle_rcon_payload(new_payload);
+					handle_rcon_payload(rcon_level_type::MASTER, new_payload);
 				};
 
 				const bool has_maintenance = false;
@@ -1994,7 +2109,7 @@ const server_name_type& server_setup::get_server_name() const {
 }
 
 std::string server_setup::get_current_arena_name() const {
-	return solvable_vars.arena;
+	return vars.arena;
 }
 
 server_step_entropy server_setup::unpack(const compact_server_step_entropy& n) const {
@@ -2041,6 +2156,9 @@ bool safe_equal(const decltype(requested_client_settings::rcon_password)& candid
 	return matches == static_cast<int>(actual_password.size());
 }
 
+netcode_address_t to_netcode_addr(const yojimbo::Address& t);
+bool is_internal(const netcode_address_t& address);
+
 rcon_level_type server_setup::get_rcon_level(const client_id_type& id) const { 
 	if (is_integrated()) {
 		if (id == get_integrated_client_id()) {
@@ -2059,12 +2177,24 @@ rcon_level_type server_setup::get_rcon_level(const client_id_type& id) const {
 		}
 	}
 
+	if (vars.auto_authorize_internal_for_rcon) {
+		if (is_internal(to_netcode_addr(server->get_client_address(id)))) {
+			LOG("Auto-authorizing the internal network client %x for master rcon.", ::ToString(server->get_client_address(id)));
+			return rcon_level_type::MASTER;
+		}
+	}
+
 	if (::safe_equal(c.settings.rcon_password, private_vars.master_rcon_password)) {
 		LOG("Authorized the remote client for master rcon.");
 		return rcon_level_type::MASTER;
 	}
 
 	if (::safe_equal(c.settings.rcon_password, private_vars.rcon_password)) {
+		if (private_vars.master_rcon_password.empty()) {
+			LOG("Authorized the remote client for master rcon.");
+			return rcon_level_type::MASTER;
+		}
+
 		LOG("Authorized the remote client for basic rcon.");
 		return rcon_level_type::BASIC;
 	}
@@ -2082,7 +2212,7 @@ void server_setup::broadcast(const ::server_broadcasted_chat& payload, const std
 		[&](const auto& typed_mode) {
 			if (const auto entry = typed_mode.find(payload.author)) {
 				sender_player_faction = entry->get_faction();
-				sender_player_nickname = entry->get_chosen_name();
+				sender_player_nickname = entry->get_nickname();
 			}
 		}
 	);
@@ -2123,7 +2253,7 @@ void server_setup::broadcast(const ::server_broadcasted_chat& payload, const std
 		else {
 			server->send_payload(
 				recipient_client_id,
-				game_channel_type::SERVER_SOLVABLE_AND_STEPS,
+				game_channel_type::RELIABLE_MESSAGES,
 
 				payload
 			);
@@ -2178,11 +2308,11 @@ void server_setup::kick(const client_id_type& kicked_id, const std::string& reas
 	const auto except = kicked_id;
 	broadcast(message, except);
 
-	message.recipient_shall_kindly_leave = true;
+	message.recipient_effect = recipient_effect_type::DISCONNECT;
 
 	server->send_payload(
 		kicked_id,
-		game_channel_type::SERVER_SOLVABLE_AND_STEPS,
+		game_channel_type::RELIABLE_MESSAGES,
 
 		message
 	);
@@ -2196,7 +2326,7 @@ void server_setup::ban(const client_id_type& id, const std::string& reason) {
 
 std::optional<arena_player_metas> server_setup::get_new_player_metas() {
 	if (rebuild_player_meta_viewables) {
-		auto& metas = last_player_metas;
+		auto& metas = integrated_player_metas;
 		
 		auto make_meta = [&](const auto client_id, const auto& cc) {
 			metas[client_id].avatar.image_bytes = cc.meta.avatar.image_bytes;
@@ -2212,7 +2342,7 @@ std::optional<arena_player_metas> server_setup::get_new_player_metas() {
 }
 
 const arena_player_metas* server_setup::find_player_metas() const {
-	return std::addressof(last_player_metas);
+	return std::addressof(integrated_player_metas);
 }
 	
 bool server_setup::handle_input_before_game(
@@ -2297,6 +2427,70 @@ bool server_setup::player_added_to_mode(const mode_player_id mode_id) const {
 const netcode_socket_t* server_setup::find_underlying_socket() const {
 	return server->find_underlying_socket();
 }
+
+void server_setup::refresh_runtime_info_for_rcon() {
+	auto& out_entries = runtime_info.arenas_on_disk;
+	out_entries.clear();
+
+	auto add_from = [&](const auto& root) {
+		try {
+			augs::for_each_in_directory(
+				root,
+				[&](const auto& p) {
+					out_entries.push_back({ std::filesystem::relative(p, root).string() });
+					return callback_result::CONTINUE;
+				},
+				[](const auto&) { return callback_result::CONTINUE; }
+			);
+		}
+		catch (...) {
+
+		}
+	};
+
+	add_from(OFFICIAL_ARENAS_DIR);
+	add_from(DOWNLOADED_ARENAS_DIR);
+	add_from(EDITOR_PROJECTS_DIR);
+
+	auto broadcast_new_info_to_rcons = [&](const auto recipient_id, auto&) {
+		const auto rcon_level = get_rcon_level(recipient_id);
+
+		if (rcon_level >= rcon_level_type::BASIC) {
+			server->send_payload(
+				recipient_id,
+				game_channel_type::RELIABLE_MESSAGES,
+
+				runtime_info
+			);
+		}
+	};
+
+	LOG("Refreshed runtime info. Arenas on disk: %x", out_entries.size());
+
+	for_each_id_and_client(broadcast_new_info_to_rcons, only_connected_v);
+}
+
+void server_setup::set_client_is_downloading_files(const client_id_type client_id, server_client_state& c, const downloading_type type) {
+	if (type > c.downloading_status) {
+		server_broadcasted_chat message;
+
+		message.target = 
+			type == downloading_type::DIRECTLY ? 
+			chat_target_type::DOWNLOADING_FILES_DIRECTLY : 
+			chat_target_type::DOWNLOADING_FILES
+		;
+
+		if (const auto session_id = find_session_id(client_id)) {
+			message.author = *session_id;
+
+			const auto except = client_id;
+			broadcast(message, except);
+		}
+	}
+
+	c.downloading_status = type;
+}
+
 
 #include "augs/readwrite/to_bytes.h"
 

@@ -50,7 +50,7 @@ return {
 	server_list_port = 8420,
 
 	cert_pem_path = "",
-	key_pem_path = "",
+	key_pem_path = ""
   },
 
   float_consistency_test = {
@@ -68,12 +68,6 @@ return {
 
   official_arena_servers = {
 	"arena.hypersomnia.xyz"
-  },
-
-  server_start = {
-	ip = "127.0.0.1",
-	port = 0,
-	slots = 64
   },
 
   client_start = {
@@ -270,7 +264,7 @@ treat_as_music_sounds_longer_than_secs = 5,
     draw_weapon_laser = true,
 	enabled_draw_area_markers = 1.0,
 	disabled_draw_callout_indicators = 1.0,
-	draw_nicknames = false,
+	draw_nicknames = true,
 	draw_health_numbers = true,
 	draw_damage_indicators = true,
 	occlude_neons_under_sentiences = true,
@@ -331,7 +325,9 @@ treat_as_music_sounds_longer_than_secs = 5,
 
     autosave = {
       enabled = true,
-      once_every_min = 2
+      once_every_min = 2,
+      if_loaded_autosave_show = "AUTOSAVE",
+      alert_when_loaded_autosave = true
     },
 
     camera = {
@@ -345,6 +341,7 @@ treat_as_music_sounds_longer_than_secs = 5,
       hovered_dashed_line_color = "255 255 255 140"
     },
 
+    warp_cursor_when_moving_nodes = false,
     matched_entity_color = "0 255 0 80",
 
     rectangular_selection_color = "65 131 196 60",
@@ -638,9 +635,8 @@ treat_as_music_sounds_longer_than_secs = 5,
     speed = 1000
   },
   main_menu = {
-    latest_news_url = "hypersomnia.xyz/latest_post",
     menu_intro_scene_entropy_path = "abc",
-    menu_intro_scene_intercosm_path = "abc",
+    menu_background_arena_path = "content/menu/menu",
     menu_theme_path = "",
     rewind_intro_scene_by_secs = 3.5,
     skip_credits = true,
@@ -672,7 +668,7 @@ treat_as_music_sounds_longer_than_secs = 5,
       x = 189,
       y = 208
     },
-    raw_mouse_input = false,
+    draw_own_cursor_in_fullscreen = false,
     log_keystrokes = false,
     size = {
       x = 1200,
@@ -734,57 +730,15 @@ treat_as_music_sounds_longer_than_secs = 5,
     character_silhouette_damage_highlight_secs = 0.12
   },
 
-  server_solvable = {
-	arena_switching = {
-      switch_once_every_n_matches = 2,
-      vote_rounds_before = 0
-	},
+  -- Private vars aren't known to any clients.
 
-	arena = "de_cyberaqua",
-	game_mode = "",
+  server_start = {
+	ip = "127.0.0.1",
+	port = 0,
+	slots = 16
   },
 
-  server = {
-	server_name = "${MY_NICKNAME}'s server",
-
-	allow_nat_traversal = true,
-
-	notified_server_list = {
-		address = "masterserver.hypersomnia.xyz",
-  		default_port = 8430
-	},
-
-	send_heartbeat_to_server_list_once_every_secs = 10,
-	resolve_server_list_address_once_every_secs = 60,
-    sleep_mult = 0.1,
-    log_performance_once_every_secs = 0,
-
-	kick_if_no_network_payloads_for_secs = 10,
-	move_to_spectators_if_afk_for_secs = 120,
-	kick_if_afk_for_secs = 2 * 3600,
-	time_limit_to_enter_game_since_connection = 15,
-
-	send_packets_once_every_tick = 1,
-	reset_resync_timer_once_every_secs = 4,
-	max_client_resyncs = 30,
-
-	disabled_network_simulator = {
-      latency_ms = 50,
-      jitter_ms = 10,
-      loss_percent = 1,
-	  duplicates_percent = 1,
-	},
-
-	max_buffered_client_commands = 1280,
-	state_hash_once_every_tick = 1,
-    send_net_statistics_update_once_every_secs = 1,
-
-    auto_authorize_loopback_for_rcon = true,
-	max_unauthorized_rcon_commands = 100,
-	max_bots = 0
-  },
-
-  private_server = {
+  server_private = {
     master_rcon_password = "",
     rcon_password = "",
     discord_webhook_url = "",
@@ -792,12 +746,56 @@ treat_as_music_sounds_longer_than_secs = 5,
     telegram_channel_id = "@hypersomnia_monitor"
   },
 
-  dedicated_server = {
+  server = {
+    server_name = "${MY_NICKNAME}'s server",
 
+    arena = "de_cyberaqua",
+    game_mode = "",
+
+    external_arena_files_provider = "https://hypersomnia.xyz/arenas",
+    sync_all_external_arenas_on_startup = false,
+
+    allow_nat_traversal = true,
+
+    notified_server_list = {
+      address = "masterserver.hypersomnia.xyz",
+      default_port = 8430
+    },
+
+    send_heartbeat_to_server_list_once_every_secs = 10,
+    resolve_server_list_address_once_every_secs = 60,
+    sleep_mult = 0.1,
+    log_performance_once_every_secs = 0,
+
+    kick_if_no_network_payloads_for_secs = 10,
+    move_to_spectators_if_afk_for_secs = 120,
+    kick_if_afk_for_secs = 2 * 3600,
+    time_limit_to_enter_game_since_connection = 15,
+
+    send_packets_once_every_tick = 1,
+    reset_resync_timer_once_every_secs = 4,
+    max_client_resyncs = 30,
+
+    disabled_network_simulator = {
+      latency_ms = 50,
+      jitter_ms = 10,
+      loss_percent = 1,
+      duplicates_percent = 1,
+    },
+
+    max_buffered_client_commands = 1280,
+    state_hash_once_every_tick = 1,
+    send_net_statistics_update_once_every_secs = 0.5,
+
+    auto_authorize_loopback_for_rcon = true,
+    auto_authorize_internal_for_rcon = false,
+    max_unauthorized_rcon_commands = 100,
+    max_bots = 0,
+    max_direct_file_bandwidth = 6
   },
 
   client = {
-	nickname = "Player",
+	nickname = "",
 	rcon_password = "",
 
 	net = {
@@ -830,7 +828,8 @@ treat_as_music_sounds_longer_than_secs = 5,
 	  },
       show_recent_chat_messages_num = 30,
       keep_recent_chat_messages_for_seconds = 22,
-	}
+	},
+      max_direct_file_bandwidth = 2
   },
 
   performance = {
