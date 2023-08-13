@@ -80,7 +80,8 @@ namespace components {
 		sentience_shake shake = sentience_shake::zero();
 
 		bool is_requesting_interaction = false;
-		pad_bytes<3> pad;
+		bool spells_drain_pe = true;
+		pad_bytes<2> pad;
 		interaction_result_type last_interaction_result = interaction_result_type::NOTHING_FOUND;
 
 		damage_owners_vector damage_owners;
@@ -202,7 +203,6 @@ namespace invariants {
 
 		particle_effect_input health_decrease_particles;
 
-		real32 minimum_cp_to_sprint = 0.1f;
 		real32 sprint_drains_cp_per_second = 4.f;
 		real32 dash_drains_cp = 15.f;
 		real32 base_detached_head_speed = 2000.f;

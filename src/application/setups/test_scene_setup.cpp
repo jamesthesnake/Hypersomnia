@@ -6,8 +6,9 @@
 #include "application/config_lua_table.h"
 #include "application/setups/test_scene_setup.h"
 
-#include "application/arena/choose_arena.h"
 #include "application/setups/editor/packaged_official_content.h"
+#include "application/setups/editor/project/editor_project_readwrite.h"
+#include "application/arena/build_arena_from_editor_project.hpp"
 
 #include "game/messages/game_notification.h"
 #include "application/setups/editor/project/editor_project.hpp"
@@ -15,18 +16,22 @@
 #include "augs/gui/text/printer.h"
 
 #include "game/modes/detail/delete_with_held_items.hpp"
+#include "game/detail/hand_fuse_logic.h"
+#include "game/detail/calc_ammo_info.hpp"
 
 using portal_marker = editor_area_marker_node;
 
 test_scene_setup::test_scene_setup(
-	sol::state& lua,
 	std::string nickname,
 	const packaged_official_content& official,
-	const test_scene_settings settings,
-	const input_recording_type recording_type,
+	//const input_recording_type recording_type,
 	const test_scene_type type
-) : nickname(nickname), type(type) {
-	scene.make_test_scene(lua, settings);
+) : official(official), nickname(nickname), type(type) {
+	init(type);
+}
+
+void test_scene_setup::init(const test_scene_type new_type) {
+	type = new_type;
 
 	if (type == test_scene_type::TUTORIAL) {
 		current_arena_folder = "content/menu/tutorial";
@@ -35,39 +40,59 @@ test_scene_setup::test_scene_setup(
 		current_arena_folder = "content/menu/shooting_range";
 	}
 
-	auto paths = editor_project_paths(current_arena_folder);
+	{
+		auto json_read_settings = editor_project_readwrite::reading_settings();
+		json_read_settings.read_inactive_nodes = false;
 
-	auto json_read_settings = editor_project_readwrite::reading_settings();
-	json_read_settings.read_inactive_nodes = false;
-
-	::load_arena_from_path(
-		{
+		project = editor_project_readwrite::read_project_json(
+			get_paths().project_json,
+			official.resources,
+			official.resource_map,
 			json_read_settings,
-			lua,
-			get_arena_handle(),
-			official,
-			"",
-			"",
-			clean_round_state,
-			std::nullopt,
-			&project,
-			std::addressof(entity_to_node)
-		},
+			nullptr
+		);
+	}
 
-		paths.project_json,
-		nullptr
-	);
-
-	clean_mode_state = current_mode_state;
 	name_to_node = project.make_name_to_node_map();
 
-	restart_mode();
+	{
+		auto& markers = project.nodes.template get_pool_for<editor_point_marker_node>();
 
-	if (recording_type != input_recording_type::DISABLED) {
+		bool found = false;
+
+		for (auto& p : markers) {
+			if (p.editable.faction == faction_type::METROPOLIS) {
+				if (!p.active) {
+					continue;
+				}
+
+				if (found) {
+					p.active = false;
+					continue;
+				}
+
+				found = true;
+				const auto id = editor_typed_node_id<editor_point_marker_node>::from_raw(markers.get_id_of(p)).operator editor_node_id();
+
+				const auto parent = project.find_parent_layer(id);
+
+				ensure(parent.has_value());
+				ensure(parent->layer_ptr != nullptr);
+
+				if (!typesafe_sscanf(parent->layer_ptr->unique_name, "Level%x", tutorial.level)) {
+					tutorial.level = 0;
+				}
+			}
+		}
+	};
+
+	restart_arena();
+
+	//if (recording_type != input_recording_type::DISABLED) {
 		//if (player.try_to_load_or_save_new_session(USER_FILES_DIR "/sessions/", "recorded.inputs")) {
 		//
 		//}
-	}
+	//}
 
 	/* Close any window that might be open by default */
 	escape();
@@ -82,15 +107,53 @@ void test_scene_setup::restart_arena() {
 		return cosm[get_controlled_character_id()];
 	};
 
-	auto pre_crosshair = character().get<components::crosshair>();
-	auto pre_movement_flags = character().get<components::movement>().flags;
+	auto pre_crosshair = character() ? character().get<components::crosshair>() : components::crosshair();
+	auto pre_movement_flags = character() ? character().get<components::movement>().flags : components::movement().flags;
 
-	cosm.set(clean_round_state);
-	current_mode_state = clean_mode_state;
+	{
+		for (auto& l : project.layers.pool) {
+			if (begins_with(l.unique_name, "Level")) {
+				uint32_t layer_level = 0;
+
+				if (!typesafe_sscanf(l.unique_name, "Level%x", layer_level)) {
+					l.editable.active = false;
+				}
+
+				l.editable.active = layer_level == tutorial.level || layer_level == tutorial.level + 1;
+			}
+		}
+
+		project.clear_cached_scene_node_data();
+		opponents.clear();
+
+		::build_arena_from_editor_project(
+			get_arena_handle(),
+			{
+				project,
+				"",
+				get_paths().project_folder,
+				official,
+				std::addressof(entity_to_node),
+				nullptr,
+				false, /* for_playtesting */
+				false /* editor_preview */
+			}
+		);
+
+		clean_step_number = scene.world.get_clock().now.step;
+	}
 
 	restart_mode();
 
-	character().get<components::crosshair>() = pre_crosshair;
+	if (is_tutorial()) {
+		if (tutorial.level == 0) { 
+			/* First level has a nice default. */
+		}
+		else {
+			character().get<components::crosshair>() = pre_crosshair;
+		}
+	}
+
 	character().get<components::movement>().flags = pre_movement_flags;
 }
 
@@ -164,6 +227,9 @@ void test_scene_setup::remove(logic_step step, const std::string& name) {
 }
 
 void test_scene_setup::restart_mode() {
+	should_init_level = true;
+	restart_arena_in_ms = -1;
+
 	auto& cosm = scene.world;
 
 	const auto current_teleport = typesafe_sprintf("entry%x", tutorial.level);
@@ -172,13 +238,36 @@ void test_scene_setup::restart_mode() {
 	const bool is_duals_level = tutorial.level == 6;
 	const bool is_ricochets_level = tutorial.level == 8;
 	const bool is_try_throwing_reloading_level = tutorial.level == 10 || tutorial.level == 13;
+	const bool is_planting_level = tutorial.level == 14;
+	const bool is_defusing_level = tutorial.level == 15;
+	const bool is_normal_spells_level = tutorial.level == 16;
+	const bool is_offensive_spells_level = tutorial.level == 17;
+
+	const auto player_faction = is_planting_level ? faction_type::RESISTANCE : faction_type::METROPOLIS;
+	const auto enemy_faction  = player_faction == faction_type::METROPOLIS ? faction_type::RESISTANCE : faction_type::METROPOLIS;
+
+	if (is_planting_level) {
+		auto b1 = to_handle("bomb1");
+		auto b2 = to_handle("bomb2");
+
+		b1.template get<components::hand_fuse>().fuse_delay_ms = 3000;
+		b2.template get<components::hand_fuse>().fuse_delay_ms = 2000;
+	}
+
+	if (is_defusing_level) {
+		auto b1 = to_handle("planted1");
+		auto b2 = to_handle("planted2");
+
+		b1.template get<components::hand_fuse>().fuse_delay_ms = 20000;
+		b2.template get<components::hand_fuse>().fuse_delay_ms = 18000;
+	}
 
 	get_arena_handle().on_mode_with_input(
 		[&]<typename M>(M& mode, const auto& input) {
 			if constexpr(std::is_same_v<test_mode, M>) {
 				for (auto& p : project.nodes.template get_pool_for<editor_point_marker_node>()) {
-					if (p.editable.faction == faction_type::RESISTANCE) {
-						const auto new_id = mode.add_player(input, nickname, faction_type::RESISTANCE);
+					if (p.scene_entity_id.is_set() && p.editable.faction == faction_type::RESISTANCE) {
+						const auto new_id = mode.add_player(input, nickname, enemy_faction);
 						mode.find(new_id)->dedicated_spawn = p.scene_entity_id;
 						mode.find(new_id)->hide_in_scoreboard = true;
 						const auto opponent_id = mode.find(new_id)->controlled_character_id;
@@ -192,7 +281,7 @@ void test_scene_setup::restart_mode() {
 					}
 				}
 
-				local_player_id = mode.add_player(input, nickname, faction_type::METROPOLIS);
+				local_player_id = mode.add_player(input, nickname, player_faction);
 				viewed_character_id = cosm[mode.lookup(local_player_id)].get_id();
 
 				const auto new_id = local_player_id;
@@ -205,8 +294,26 @@ void test_scene_setup::restart_mode() {
 					mode.teleport_to_next_spawn(input, new_id, mode.find(new_id)->controlled_character_id);
 				}
 
-				if (!is_tutorial() || is_akimbo_level || is_duals_level || is_ricochets_level || is_try_throwing_reloading_level) {
+				if (!is_tutorial() || is_akimbo_level || is_duals_level || is_ricochets_level || is_try_throwing_reloading_level || is_defusing_level) {
 					mode.infinite_ammo_for = viewed_character_id;
+				}
+
+				if (is_normal_spells_level) {
+					auto& s = cosm[viewed_character_id].get<components::sentience>();
+
+					s.learnt_spells[0] = true;
+					s.learnt_spells[4] = true;
+					s.learnt_spells[5] = true;
+				}
+
+				if (is_offensive_spells_level) {
+					auto& s = cosm[viewed_character_id].get<components::sentience>();
+
+					s.spells_drain_pe = false;
+
+					s.learnt_spells[1] = true;
+					s.learnt_spells[2] = true;
+					s.learnt_spells[3] = true;
 				}
 			}
 			else {
@@ -267,9 +374,105 @@ void test_scene_setup::do_tutorial_logic(const logic_step step) {
 
 	}
 
-	for (int i = 1;; ++i) {
+	auto& cosm = scene.world;
+
+	if (const bool is_planting_level = tutorial.level == 14) {
+		if (auto armor = cosm[viewed_character_id][slot_function::TORSO_ARMOR].get_item_if_any()) {
+			step.queue_deletion_of(armor, "disable armor");
+		}
+
+		if (to_handle("bomb1").dead()) {
+			remove(step, "obs_bomb1");
+		}
+
+		if (to_handle("bomb2").dead()) {
+			remove(step, "obs_bomb2");
+		}
+	}
+
+	if (restart_arena_in_ms > 0) {
+		restart_arena_in_ms -= step.get_delta().in_milliseconds();
+
+		if (restart_arena_in_ms <= 0) {
+			restart_arena();
+		}
+	}
+
+	if (const bool is_weapon_level = tutorial.level == 4) {
+		if (const bool still_first_stage = to_handle("obs1").alive()) {
+			const bool baka_empty = 0 == ::calc_ammo_info(to_handle("baka47")).total_charges;
+
+			if (baka_empty) {
+				if (restart_arena_in_ms < 0) {
+					restart_arena_in_ms = 500.0f;
+				}
+			}
+		}
+	}
+
+	if (const bool is_defusing_level = tutorial.level == 15) {
+		auto carrier = to_handle("carrier");
+		auto carrier_bomb = to_handle("carrier_bomb");
+
+		ensure(carrier); 
+		ensure(carrier_bomb);
+
+		if (should_init_level) {
+			const auto pickup_slot = carrier.find_pickup_target_slot_for(carrier_bomb, { slot_finding_opt::OMIT_MOUNTED_SLOTS });
+
+			if (pickup_slot.alive()) {
+				perform_transfer(item_slot_transfer_request::standard(entity_id(carrier_bomb.get_id()), pickup_slot), step);
+			}
+		}
+		else {
+			if (carrier_bomb.get_owning_transfer_capability() == viewed_character_id) {
+				remove(step, "obs_carrier");
+			}
+		}
+
+		auto b1 = to_handle("planted1");
+		auto b2 = to_handle("planted2");
+
+		if (b1.dead() || b2.dead()) {
+			if (restart_arena_in_ms < 0) {
+				restart_arena_in_ms = 1000.0f;
+			}
+		}
+		else {
+			bool arm_second = false;
+
+			b1.dispatch_on_having_all<components::hand_fuse>([&](const auto& typed_fused) {
+				auto fuse_logic = fuse_logic_provider(typed_fused, step);
+
+				if (should_init_level) {
+					fuse_logic.arm_explosive(arming_source_type::SHOOT_INTENT, false);
+				}
+				else {
+					if (fuse_logic.defused()) {
+						arm_second = true;
+						remove(step, "obs_def1");
+					}
+				}
+			});
+
+			b2.dispatch_on_having_all<components::hand_fuse>([&](const auto& typed_fused) {
+				auto fuse_logic = fuse_logic_provider(typed_fused, step);
+
+				if (fuse_logic.defused()) {
+					remove(step, "obs_def2");
+				}
+				else {
+					if (arm_second && !fuse_logic.armed()) {
+						fuse_logic.arm_explosive(arming_source_type::SHOOT_INTENT, true);
+					}
+				}
+			});
+		}
+	}
+
+	for (int i = 1; i < 30; ++i) {
 		if (!exists(i, 0)) {
-			break;
+			continue;
 		}
 
 		bool all_killed = true;
@@ -278,7 +481,7 @@ void test_scene_setup::do_tutorial_logic(const logic_step step) {
 
 		while (exists(i, j)) {
 			if (!killed(i, j)) {
-				if (const auto disable_armor = i == 14 || i == 16) {
+				if (const auto disable_armor = i == 14 || i == 16 || i == 18 || i == 19 || i == 22 || i == 23 || i == 24) {
 					if (auto handle = to_handle(get_opp(i, j))) {
 						if (auto armor = handle[slot_function::TORSO_ARMOR].get_item_if_any()) {
 							step.queue_deletion_of(armor, "disable armor");
@@ -301,9 +504,13 @@ void test_scene_setup::do_tutorial_logic(const logic_step step) {
 			const bool have_to_kill_simultaneously = is_akimbo_level;
 
 			if (have_to_kill_simultaneously) {
-				for (int jj = 0; jj < j; ++jj) {
-					remove(step, get_opp(i, jj));
-				}
+				get_arena_handle().on_mode_with_input(
+					[&]<typename M>(M& mode, const auto&) {
+						if constexpr(std::is_same_v<test_mode, M>) {
+							mode.for_each_player_in(faction_type::RESISTANCE, [&mode](auto id, auto) { mode.find(id)->allow_respawn = false; });
+						}
+					}
+				);
 			}
 
 			int k = 0;
@@ -314,6 +521,8 @@ void test_scene_setup::do_tutorial_logic(const logic_step step) {
 			}
 		}
 	}
+
+	should_init_level = false;
 }
 
 void test_scene_setup::pre_solve(const logic_step step) {
@@ -332,16 +541,26 @@ bool test_scene_setup::post_solve(const const_logic_step step) {
 
 	auto& cosm = scene.world;
 
-	if (cosm.get_total_steps_passed() <= clean_round_state.clk.now.step + 1) {
+	if (cosm.get_total_steps_passed() <= clean_step_number + 1) {
 		/* Otherwise we'd have an infinite loop. */
 		return false;
 	}
+
+	bool shooting_range = false;
 
 	for (const auto& n : notifications) {
 		if (const auto tp = std::get_if<messages::teleportation>(std::addressof(n.payload))) {
 			if (tp->teleported == viewed_character_id) {
 				if (const auto portal = find<portal_marker>(tp->to_portal)) {
 					const auto& name = portal->unique_name;
+
+					if (name == "main_menu") {
+						special_result = custom_imgui_result::GO_TO_MAIN_MENU;
+					}
+
+					if (name == "shooting_range") {
+						shooting_range = true;
+					}
 
 					if (begins_with(name, "entry")) {
 						uint32_t new_level = 0;
@@ -355,6 +574,20 @@ bool test_scene_setup::post_solve(const const_logic_step step) {
 				}
 			}
 		}
+	}
+
+	if (shooting_range) {
+		auto character = [&]() {
+			return cosm[get_controlled_character_id()];
+		};
+
+		auto pre_crosshair = character() ? character().get<components::crosshair>() : components::crosshair();
+		auto pre_movement_flags = character() ? character().get<components::movement>().flags : components::movement().flags;
+
+		init(test_scene_type::SHOOTING_RANGE);
+
+		character().get<components::crosshair>() = pre_crosshair;
+		character().get<components::movement>().flags = pre_movement_flags;
 	}
 
 	return false;

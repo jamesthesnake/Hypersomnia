@@ -256,7 +256,11 @@ void game_gui_system::control_hotbar_and_action_button(
 
 			if (r.intent == inventory_gui_intent_type::HOLSTER) {
 				const auto current_setup = wielding_setup::from_current(gui_entity);
-				request_setup(wielding_setup::bare_hands(), current_setup);
+
+				if (current_setup != wielding_setup::bare_hands()) {
+					request_setup(wielding_setup::bare_hands(), current_setup);
+				}
+
 				return;
 			}
 		}
@@ -281,9 +285,9 @@ void game_gui_system::control_hotbar_and_action_button(
 			if (gui.hotbar_buttons[hotbar_button_index].get_assigned_entity(gui_entity)) {
 				/* Something is assigned to that button */
 				if (i.was_pressed()) {
-					const bool should_dual_wield = currently_held_index > -1;
+					const bool wants_dual_wield = currently_held_index > -1;
 
-					if (should_dual_wield) {
+					if (wants_dual_wield) {
 						const auto akimbo_setup = gui.get_setup_from_button_indices(
 							gui_entity, 
 							currently_held_index, 
@@ -303,18 +307,65 @@ void game_gui_system::control_hotbar_and_action_button(
 						);
 
 						const auto current_setup = wielding_setup::from_current(gui_entity);
+						bool skip_wield = false;
 
-						if (new_setup == current_setup) {
-							auto& ar = new_setup.hand_selections;
-							std::swap(ar[0], ar[1]);
+						const auto& cosm = gui_entity.get_cosmos();
+
+						if (new_setup.equivalent_to(cosm, current_setup)) {
+							auto is_nade_or_none = [&](auto h) {
+								if (cosm[h].dead()) {
+									return true;
+								}
+
+								return cosm[h].template has<components::hand_fuse>();
+							};
+							
+							if (is_nade_or_none(new_setup.hand_selections[0]) && is_nade_or_none(new_setup.hand_selections[1])) {
+								/* Wouldn't switch hands for grenades */
+								skip_wield = true;
+							}
+							else {
+								new_setup.switch_hands();
+							}
 						}
 
-						gui.save_as_last_setup(current_setup);
-						queue_wielding(gui_entity, new_setup);
+						if (!skip_wield) {
+							gui.save_as_last_setup(current_setup);
+							queue_wielding(gui_entity, new_setup);
+						}
 					}
 				}
 				else {
 					currently_held_index = -1;
+				}
+			}
+			else {
+				/* 
+					Corner case: 
+
+					What if we want to dual-wield two entities stacked into the same hotbar button?
+					We can communicate this by choosing an empty slot as the second one.
+				*/
+
+				const bool wants_dual_wield = currently_held_index > -1;
+
+				if (wants_dual_wield && i.was_pressed()) {
+					int count = 0;
+					gui.hotbar_buttons[currently_held_index].get_assigned_entity(gui_entity, &count);
+
+					const bool held_is_stacked = count > 1;
+
+					if (held_is_stacked) {
+						const auto akimbo_setup = gui.get_setup_from_button_indices(
+							gui_entity, 
+							currently_held_index, 
+							currently_held_index
+						);
+
+						queue_wielding(gui_entity, akimbo_setup);
+
+						currently_held_index = -1;
+					}
 				}
 			}
 		}
@@ -337,8 +388,18 @@ void game_gui_system::control_hotbar_and_action_button(
 		else if (i.intent == inventory_gui_intent_type::LAST_USED_WEAPON && i.was_pressed()) {
 			const auto wielding = gui.make_wielding_setup_for_last_hotbar_selection_setup(gui_entity, input);
 
-			//if (!wielding.same_as_in(gui_entity)) {
+			const auto current_setup = wielding_setup::from_current(gui_entity);
+
+			const auto& cosm = gui_entity.get_cosmos();
+
+			if (current_setup.equivalent_to(cosm, wielding)) {
+				queue_wielding(gui_entity, wielding_setup::bare_hands());
+			}
+			else {
 				queue_wielding(gui_entity, wielding);
+			}
+
+			//if (!wielding.same_as_in(gui_entity)) {
 				//}
 		}
 	}
@@ -614,7 +675,14 @@ void game_gui_system::standard_post_solve(
 				auto& ch = it.second;
 
 				for (auto& h : ch.hotbar_buttons) {
-					migrate_id(h.last_assigned_entity);
+					std::visit(
+						[&]<typename A>(A& assigned) {
+							if constexpr(std::is_same_v<A, entity_id>) {
+								migrate_id(assigned);
+							}
+						},
+						h.last_assigned
+					);
 				}
 
 				for (auto& s : ch.last_setup.hand_selections) {

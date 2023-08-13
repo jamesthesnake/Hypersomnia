@@ -231,8 +231,6 @@ namespace test_flavours {
 					slot_def.physical_behaviour = slot_physical_behaviour::DEACTIVATE_BODIES;
 					slot_def.always_allow_exactly_one_item = true;
 					slot_def.space_available = to_space_units("1000");
-					slot_def.mounting_duration_ms = 1000.f;
-					slot_def.finish_mounting_sound.id = to_sound_id(test_scene_sound_id::BACKPACK_WEAR);
 					container.slots[slot_function::TORSO_ARMOR] = slot_def;
 				}
 
@@ -285,7 +283,6 @@ namespace test_flavours {
 			sentience.exertion_cooldown_for_cp_regen_ms = 500.f;
 			sentience.dash_drains_cp = 60.f;
 			sentience.cp_regen_mult_when_moving = 0.3f;
-			sentience.minimum_cp_to_sprint = 0.08f;
 
 			sentience_inst.get<health_meter_instance>().set_value(100);
 			sentience_inst.get<health_meter_instance>().set_maximum_value(100);
@@ -295,8 +292,8 @@ namespace test_flavours {
 			sentience_inst.get<personal_electricity_meter_instance>().set_maximum_value(100);
 			sentience_inst.get<personal_electricity_meter_instance>().regeneration_unit = 1.2;
 			sentience_inst.get<personal_electricity_meter_instance>().regeneration_interval_ms = 2000;
-			sentience_inst.get<consciousness_meter_instance>().set_value(350);
-			sentience_inst.get<consciousness_meter_instance>().set_maximum_value(350);
+			sentience_inst.get<consciousness_meter_instance>().set_value(300);
+			sentience_inst.get<consciousness_meter_instance>().set_maximum_value(300);
 			sentience_inst.get<consciousness_meter_instance>().regeneration_unit = 10;
 			sentience_inst.get<consciousness_meter_instance>().regeneration_interval_ms = 130;
 
@@ -306,7 +303,7 @@ namespace test_flavours {
 				auto& in = explosive.explosion;
 				auto& dmg = in.damage;
 
-				dmg.base = 30.f;
+				dmg.base = -100.f;
 				in.inner_ring_color = orange;
 				in.outer_ring_color = yellow;
 				in.effective_radius = 350.f;
