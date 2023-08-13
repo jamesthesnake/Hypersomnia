@@ -345,7 +345,7 @@ void gun_system::launch_shots_due_to_pressed_triggers(const logic_step step) {
 
 					for (std::size_t i = 0; i < hand_count_v; ++i) {
 						if (::get_hand_flag(owning_capability, i)) {
-							const auto action = owning_capability.calc_hand_action(i);
+							const auto action = owning_capability.calc_viable_hand_action(i);
 
 							if (action.held_item == gun_entity) {
 								out.set(action.type);
@@ -527,7 +527,7 @@ void gun_system::launch_shots_due_to_pressed_triggers(const logic_step step) {
 						}
 
 						if (hs[1].is_set() && !hs[0].is_set()) {
-							requested_wield.flip();
+							requested_wield.switch_hands();
 						}
 
 						if (std::nullopt == calc_reloading_context_for(capability, gun_entity)) {
